@@ -1,0 +1,93 @@
+{
+  "name": "@heal-dev/heal-playwright-tracer",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heal-dev/heal-playwright-tracer.git"
+  },
+  "version": "0.1.1-rc.4",
+  "description": "Statement-level execution tracer for Playwright tests. Records every executed line with timing, variable values, call depth, errors, and Playwright API correlations.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./code-hook-injector": {
+      "types": "./dist/code-hook-injector/babel-plugin-entrypoint.d.ts",
+      "default": "./dist/code-hook-injector/babel-plugin-entrypoint.js"
+    },
+    "./trace-event-recorder": {
+      "types": "./dist/trace-event-recorder/entrypoint.d.ts",
+      "default": "./dist/trace-event-recorder/entrypoint.js"
+    },
+    "./statement-trace-schema": {
+      "types": "./dist/features/trace-output/statement-trace-schema.d.ts",
+      "default": "./dist/features/trace-output/statement-trace-schema.js"
+    },
+    "./heal-trace-sink": {
+      "types": "./dist/trace-event-recorder/ports/heal-trace-sink.d.ts",
+      "default": "./dist/trace-event-recorder/ports/heal-trace-sink.js"
+    }
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "docs/"
+  ],
+  "scripts": {
+    "clean": "rm -rf dist",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc -p tsconfig.lint.json",
+    "lint": "eslint src tests",
+    "lint:fix": "eslint src tests --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check": "npm run typecheck && npm run lint && npm run format:check",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,js}": [
+      "prettier --write",
+      "eslint --fix"
+    ],
+    "*.{json,md}": [
+      "prettier --write"
+    ]
+  },
+  "keywords": [
+    "playwright",
+    "tracing",
+    "instrumentation",
+    "babel-plugin",
+    "test-runner",
+    "observability"
+  ],
+  "peerDependencies": {
+    "@playwright/test": "1.58.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.29.0",
+    "@babel/parser": "^7.29.2",
+    "@playwright/test": "1.58.1",
+    "@types/babel__core": "^7.20.5",
+    "@types/babel__traverse": "^7.28.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.39.4",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.2",
+    "prettier": "^3.8.3",
+    "typescript": "^5.4.0",
+    "typescript-eslint": "^8.58.2",
+    "vitest": "^4.1.4"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

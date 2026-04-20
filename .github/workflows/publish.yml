@@ -1,0 +1,238 @@
+name: Publish Package
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_bump:
+        description: 'Version bump type'
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - prepatch
+          - preminor
+          - premajor
+          - prerelease
+        default: 'patch'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install dependencies
+        run: npm ci
+        env:
+          HEAL_GITHUB_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
+
+      - name: Build package for tests
+        run: npm run build
+
+      - name: Debug git status
+        run: git status
+
+      - name: Bump version
+        id: version
+        run: |
+          # Bump version and capture output
+          npm version ${{ inputs.version_bump }} --preid rc -m "chore: bump version to %s"
+
+          # Get the new version
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "New version: $NEW_VERSION"
+
+      - name: Push changes
+        run: |
+          git push origin main
+
+      - name: Clean built package for test
+        run: rm -rf dist/
+
+      - name: Build package for release
+        run: npm run build
+
+      - name: Publish to GitHub Packages
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [[ "$VERSION" == *"-rc."* ]]; then
+            echo "Publishing RC version $VERSION with tag 'rc'"
+            npm publish --tag rc
+          else
+            echo "Publishing stable version $VERSION with tag 'latest'"
+            npm publish
+          fi
+        env:
+          HEAL_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Get commit history
+        id: commits
+        if: success()
+        run: |
+          # Find the previous version bump commit (excluding HEAD which is the current bump)
+          PREVIOUS_VERSION_COMMIT=$(git log --grep="^chore: bump version to" --format="%H" -n 1 HEAD^ || echo "")
+
+          if [ -z "$PREVIOUS_VERSION_COMMIT" ]; then
+            echo "No previous version bump commit found, showing last 10 commits"
+            COMMITS=$(git log -10 --oneline --no-merges)
+          else
+            echo "Getting commits since previous version bump: $PREVIOUS_VERSION_COMMIT"
+            COMMITS=$(git log ${PREVIOUS_VERSION_COMMIT}..HEAD --oneline --no-merges)
+          fi
+
+          # Format commits for Slack (limit to 15 and escape special characters)
+          # Convert newlines to \n for Slack's mrkdwn format
+          FORMATTED_COMMITS=$(echo "$COMMITS" | head -15 | sed 's/^/• /' | sed 's/"/\\"/g' | awk '{printf "%s\\n", $0}' | sed 's/\\n$//')
+
+          # Count total commits
+          COMMIT_COUNT=$(echo "$COMMITS" | wc -l | xargs)
+
+          # Store in GITHUB_OUTPUT (handle multiline)
+          {
+            echo "formatted_commits<<EOF"
+            echo "$FORMATTED_COMMITS"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          echo "previous_version_commit=$PREVIOUS_VERSION_COMMIT" >> $GITHUB_OUTPUT
+
+          # Get package name from package.json
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          echo "package_name=$PACKAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Notify Slack on success
+        if: success()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
+              "attachments": [
+                {
+                  "color": "28a745",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "📦 heal-playwright-tracer v${{ steps.version.outputs.new_version }} Published Successfully${{ contains(steps.version.outputs.new_version, '-rc.') && ' (RC)' || '' }}",
+                        "emoji": true
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Package*\n`${{ steps.commits.outputs.package_name }}`"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Version*\n`${{ steps.version.outputs.new_version }}`"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Triggered by*\n${{ github.actor }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Version bump*\n`${{ inputs.version_bump }}`"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*📝 Changes (${{ steps.commits.outputs.commit_count }} commits)*\n${{ steps.commits.outputs.formatted_commits }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View GitHub Action> | <https://github.com/${{ github.repository }}/packages|View Package>"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+
+      - name: Notify Slack on failure
+        if: failure()
+        uses: slackapi/slack-github-action@v2.0.0
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            {
+              "channel": "${{ secrets.SLACK_CHANNEL_ID }}",
+              "attachments": [
+                {
+                  "color": "ea5455",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "❌ heal-playwright-tracer Publish Failed",
+                        "emoji": true
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Triggered by*\n${{ github.actor }}"
+                        },
+                        {
+                          "type": "mrkdwn",
+                          "text": "*Version bump*\n`${{ inputs.version_bump }}`"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "*Status*\nFailed"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View Failed GitHub Action>"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }

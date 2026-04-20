@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["ES2020", "DOM"],
+    "declaration": true,
+    "declarationMap": false,
+    "sourceMap": false,
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "types": ["node"]
+  },
+  "include": [
+    "src/index.ts",
+    "src/code-hook-injector/babel-plugin-entrypoint.ts",
+    "src/trace-event-recorder/entrypoint.ts",
+    "src/features/trace-output/statement-trace-schema.ts",
+    "src/trace-event-recorder/ports/heal-trace-sink.ts"
+  ],
+  "exclude": ["node_modules", "dist"]
+}
