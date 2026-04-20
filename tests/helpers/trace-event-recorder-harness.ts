@@ -1,36 +1,48 @@
-// Test harness: build a trace-event-recorder wired to a MemorySink
-// plus a fake clock. Deterministic time keeps snapshot assertions
+// Test harness: build a trace-event-recorder wired to a consumer
+// stub plus a fake clock. Deterministic time keeps event assertions
 // stable across machines.
 
-import { createTraceEventRecorder } from '../../src/trace-event-recorder/factory';
-import { createMemorySink } from '../../src/trace-event-recorder/adapters/memory-sink';
+import { TraceEventRecorder } from '../../src/domain/trace-event-recorder/service';
+import type { TraceEventConsumer } from '../../src/domain/trace-event-recorder/port/trace-event-consumer';
+import { createTraceEventConsumerStub } from './trace-event-consumer-stub';
 
-export function createFakeClock(start = 1000) {
+export function createFakeClock(start = 1000, wallStart = 1_700_000_000_000) {
   let t = start;
+  let wall = wallStart;
   return {
     now: () => t,
+    wallNow: () => wall,
     advance: (ms: number) => {
       t += ms;
+      wall += ms;
     },
     set: (value: number) => {
       t = value;
     },
+    setWall: (value: number) => {
+      wall = value;
+    },
   };
 }
 
-// In tests the sink is treated as `any[]` so assertions can poke at
-// fields without fighting the generic TraceEvent type. Production
-// code keeps the tighter typing from trace-event-recorder/factory.ts.
-interface TestSink {
-  write(event: Record<string, unknown>): void;
-
-  snapshot(): any[];
-  clear(): void;
+// Tests destructure `{ rt, events }` — `events` is the live array
+// the stub's `write()` pushes into. Reads never go through the
+// consumer (which only exposes production methods: `write`, `clear`).
+//
+// Typed as `any[]` so assertions can poke at discriminated-union
+// fields without repeated narrowing casts. The underlying stub types
+// it as `TraceEvent[]`; the loosening happens at this boundary for
+// test ergonomics.
+export interface Harness {
+  rt: TraceEventRecorder;
+  consumer: TraceEventConsumer;
+  events: any[];
+  clock: ReturnType<typeof createFakeClock>;
 }
 
-export function buildHarness(staticContext: Record<string, unknown> = {}) {
-  const sink = createMemorySink();
+export function buildHarness(staticContext: Record<string, unknown> = {}): Harness {
+  const { consumer, events } = createTraceEventConsumerStub();
   const clock = createFakeClock();
-  const rt = createTraceEventRecorder({ sink, clock, staticContext });
-  return { rt, sink: sink as unknown as TestSink, clock };
+  const rt = new TraceEventRecorder({ exporter: consumer, clock, staticContext });
+  return { rt, consumer, events: events as unknown as any[], clock };
 }

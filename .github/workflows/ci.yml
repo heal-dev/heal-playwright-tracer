@@ -12,8 +12,11 @@ concurrency:
 
 jobs:
   unit:
-    name: Typecheck / Lint / Format / Unit Tests / Build
+    name: Lint / Unit coverage / Build
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -28,16 +31,31 @@ jobs:
       - name: Typecheck + lint + format
         run: npm run check
 
-      - name: Unit tests
-        run: npm test
+      - name: Run unit tests with coverage
+        run: npm run test:coverage
+
+      - name: Report coverage on PR
+        if: github.event_name == 'pull_request'
+        uses: davelosert/vitest-coverage-report-action@v2
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage/lcov.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Build
         run: npm run build
 
   integration:
-    name: Integration tests (Playwright sandbox)
+    name: Integration (Playwright ${{ matrix.playwright }})
     runs-on: ubuntu-latest
-    needs: unit
+    strategy:
+      fail-fast: false
+      matrix:
+        playwright: ['1.50.0', '1.58.1']
     steps:
       - uses: actions/checkout@v4
 
@@ -53,10 +71,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-browsers-${{ runner.os }}
+          key: playwright-browsers-${{ runner.os }}-${{ matrix.playwright }}
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps chromium
 
       - name: Run integration tests
+        env:
+          PLAYWRIGHT_VERSION: ${{ matrix.playwright }}
         run: npm run test:integration

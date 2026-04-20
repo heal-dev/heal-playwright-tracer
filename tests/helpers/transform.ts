@@ -1,6 +1,6 @@
 import { transformSync } from '@babel/core';
 import { parse } from '@babel/parser';
-import codeHookInjector from '../../src/code-hook-injector/babel-plugin-entrypoint';
+import codeHookInjector from '../../src/application/babel-playwright-tracer-plugin';
 
 // Small wrapper around @babel/core that runs the code-hook injector
 // against a source string and returns the generated code. A stable

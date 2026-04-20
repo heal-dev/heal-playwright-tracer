@@ -18,10 +18,10 @@
   },
   "include": [
     "src/index.ts",
-    "src/code-hook-injector/babel-plugin-entrypoint.ts",
-    "src/trace-event-recorder/entrypoint.ts",
-    "src/features/trace-output/statement-trace-schema.ts",
-    "src/trace-event-recorder/ports/heal-trace-sink.ts"
+    "src/application/babel-playwright-tracer-plugin/index.ts",
+    "src/domain/trace-event-recorder/service/entrypoint.ts",
+    "src/domain/trace-event-recorder/model/statement-trace-schema.ts",
+    "src/domain/trace-event-recorder/port/heal-trace-exporter.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }

@@ -1,8 +1,10 @@
 // Factory for a TraceEventRecorderState suitable for unit-testing
 // event builders directly. Each event builder is a pure-ish function
 // of `(state, input) → void` that mutates state and writes to
-// state.sink — this helper hands out a pre-wired state whose sink
-// and clock are the deterministic test doubles.
+// `state.exporter` — this helper hands out a pre-wired state plus the
+// live `events` array the stub consumer pushes into, so tests can
+// read what was written without calling any non-production method on
+// the consumer itself.
 //
 // Prefer this over `buildHarness()` (from
 // trace-event-recorder-harness.ts) when you want to test ONE builder
@@ -10,10 +12,12 @@
 // TraceEventRecorder API and is the right choice for integration
 // coverage in tests/trace-event-recorder/factory.test.ts.
 
-import { createMemorySink } from '../../src/trace-event-recorder/adapters/memory-sink';
-import { createActiveEnterStack } from '../../src/trace-event-recorder/active-enter-stack';
-import type { TraceEventRecorderState } from '../../src/trace-event-recorder/state';
-import type { Clock } from '../../src/trace-event-recorder/ports/clock';
+import { createTraceEventConsumerStub } from './trace-event-consumer-stub';
+import {
+  ActiveEnterStack,
+  type TraceEventRecorderState,
+} from '../../src/domain/trace-event-recorder/service';
+import type { Clock } from '../../src/domain/trace-event-recorder/port/clock';
 import { createFakeClock } from './trace-event-recorder-harness';
 
 interface TestStateOverrides {
@@ -25,20 +29,29 @@ interface TestStateOverrides {
   startedAt?: number;
 }
 
-export function createTestRecorderState(
-  overrides: TestStateOverrides = {},
-): TraceEventRecorderState {
+export interface TestRecorderState extends TraceEventRecorderState {
+  /**
+   * Live buffer the consumer stub pushes into. Read for assertions.
+   * Typed as `any[]` so tests can poke at discriminated-union fields
+   * without repeated narrowing casts.
+   */
+  events: any[];
+}
+
+export function createTestRecorderState(overrides: TestStateOverrides = {}): TestRecorderState {
+  const { consumer, events } = createTraceEventConsumerStub();
   const clock = overrides.clock ?? createFakeClock();
   return {
-    sink: createMemorySink(),
+    exporter: consumer,
     clock,
     staticContext: overrides.staticContext ?? {},
     dynamicContext: overrides.dynamicContext ?? null,
     currentPage: overrides.currentPage ?? null,
-    enterStack: createActiveEnterStack(),
+    enterStack: new ActiveEnterStack(),
     stepStack: [],
     seq: overrides.seq ?? 0,
     startedAt: overrides.startedAt ?? 0,
+    events: events as unknown as any[],
   };
 }
 
