@@ -39,7 +39,7 @@ function metaEvent(): MetaEvent {
     t: 0,
     wallTime: 1700000000000,
     schemaVersion: 1,
-    runId: 'r',
+    testId: 'tid-1',
     attempt: 1,
     testTitle: 't',
     titlePath: ['t'],

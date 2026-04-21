@@ -14,7 +14,7 @@
 // is the test's full ndjson stream. We keep each batch as a separate
 // `RawBatch` rather than concatenating, because batch boundaries map
 // 1:1 to tests — `HttpTraceReader` walks them straight into
-// `Map<title, ParsedTrace>` without needing to demux by `runId`.
+// `Map<title, ParsedTrace>` without needing to demux by testId.
 
 import * as http from 'http';
 import type { AddressInfo } from 'net';

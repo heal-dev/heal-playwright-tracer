@@ -32,9 +32,9 @@ import type { TestInfo } from '@playwright/test';
 import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/heal-trace-exporter';
 
 /**
- * Everything the fixture hands to a exporter or lifecycle factory when a
- * test starts. The `transport` subobject matches the envelope sidecar
- * adapters (e.g. `CollectorHttpExporter`) expect.
+ * Everything the fixture hands to a exporter or lifecycle factory
+ * when a test starts. The `transport` subobject carries the per-test
+ * correlation identifiers any outbound exporter needs.
  */
 export interface HealTracerTestContext {
   testInfo: TestInfo;
@@ -44,12 +44,16 @@ export interface HealTracerTestContext {
    */
   healDataDir: string;
   transport: {
-    runId: string;
+    /**
+     * Playwright's `testInfo.testId` — stable hash of
+     * (file, title, project). Shared across attempts of the same
+     * test, unique per distinct test. Together with `attempt` it
+     * forms the per-test-attempt correlation key.
+     */
+    testId: string;
     attempt: number;
-    /** Absolute `testInfo.outputDir` — the pod-side collector reads files from here. */
+    /** Absolute `testInfo.outputDir`. */
     rootDir: string;
-    /** Optional external execution id from `HEAL_EXECUTION_ID`. Omitted when unset. */
-    executionId?: string;
   };
 }
 

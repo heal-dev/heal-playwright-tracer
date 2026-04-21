@@ -109,7 +109,7 @@ Exporters implement [`HealTraceExporter`](src/domain/trace-event-recorder/port/h
 `heal-data/heal-traces.ndjson` — one record per line:
 
 ```ndjson
-{"kind":"test-header","schemaVersion":1,"test":{"title":"it works","file":"tests/example.spec.ts","context":{"runId":"...","attempt":1}}}
+{"kind":"test-header","schemaVersion":1,"test":{"title":"it works","file":"tests/example.spec.ts","context":{"testId":"...","attempt":1}}}
 {"kind":"statement","statement":{"loc":{"line":5},"source":"await page.goto('https://example.com')","durationMs":412,"status":"ok","children":[...]}}
 {"kind":"statement","statement":{"loc":{"line":6},"source":"await expect(page.getByRole('heading')).toBeVisible()","durationMs":73,"status":"ok"}}
 {"kind":"test-result","status":"passed","duration":1234,"stdout":"...","stderr":""}

@@ -37,7 +37,7 @@
 // Env toggles:
 //   HEAL_TRACE_NDJSON   default on; set to `0`/`false`/`off` to disable.
 //
-// Any backend integration (live-collector HTTP shipping, APM bindings,
+// Any backend integration (HTTP shipping, APM bindings,
 // telemetry-session setup, …) lives in user code and plugs in via
 // `configureTracer`. The fixture knows nothing about any specific
 // backend.
@@ -120,9 +120,7 @@ function buildHealTraceExporter(
   return legs.length === 1 ? legs[0] : new CompositeHealTraceExporter(legs);
 }
 
-// Composition-root singletons — one per process. The
-// test-context adapter's UUID cache survives across retries of the
-// same test (same worker) this way.
+// Composition-root singletons — one per process.
 const testContextAdapter = new PlaywrightTestContextAdapter({ setContext });
 const stepTrackingAdapter = new PlaywrightStepTrackingAdapter({ pushStep, popStep });
 
@@ -138,10 +136,9 @@ export const test = base.extend<TraceFixtures>({
         testInfo,
         healDataDir,
         transport: {
-          runId: captured.runId,
+          testId: captured.testId,
           attempt: captured.attempt,
           rootDir: testInfo.outputDir,
-          ...(captured.executionId ? { executionId: captured.executionId } : {}),
         },
       };
 

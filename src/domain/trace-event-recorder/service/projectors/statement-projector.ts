@@ -238,9 +238,7 @@ function buildTestHeader(meta: MetaEvent): TestHeader {
   };
   const context: TestContext = {
     testId: meta.testId ?? '',
-    runId: meta.runId ?? '',
     attempt: meta.attempt ?? 1,
-    ...(meta.executionId ? { executionId: meta.executionId } : {}),
     ...(meta.testCaseId !== undefined ? { testCaseId: meta.testCaseId } : {}),
   };
   return {

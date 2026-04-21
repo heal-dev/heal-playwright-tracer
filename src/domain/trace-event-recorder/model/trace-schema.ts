@@ -59,9 +59,7 @@ export interface MetaEvent extends TraceEventBase {
   testFile?: string;
   retry?: number;
   // Correlation identifiers (per-test).
-  runId?: string;
   attempt?: number;
-  executionId?: string;
   testCaseId?: number;
   // Forward-compatible escape hatch.
   [key: string]: unknown;
