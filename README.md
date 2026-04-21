@@ -4,7 +4,7 @@
   </a>
 </h1>
 <p align="center">
-  <p align="center">Statement-level execution tracing for Playwright tests, purpose-built for AI autopilots.</p>
+  <p align="center">Open-source statement-level Playwright tracer, purpose-built for AI agents.</p>
 </p>
 
 <h4 align="center">
@@ -23,14 +23,25 @@
 
 # @heal-dev/heal-playwright-tracer
 
-An AI-agent-first diagnostic layer for Playwright tests. Purpose-built
-to give an agent everything it needs to reason about _why_
-a test failed: statement-level execution traces with timing,
-variable values, call depth, serialized errors, highlighted locator
-screenshots, and Playwright API correlations. Events are emitted as a
-structured NDJSON stream per test, alongside Playwright's own HTML
-report and trace viewer. Useful to humans too, but every design
-decision optimizes for what an LLM needs to see.
+heal-playwright-tracer is an agent-first diagnostic layer for Playwright tests. It gives agents
+(and humans) everything they need to quickly analyze test results.
+
+## Why
+
+The playwright trace doesn't contain enough data for LLM-based agents such as Claude or Open Code to anlyze tests results reliably.
+That's because the trace ifs focused on locator evaluation, while real-life tests also evaluate non-playwright code.
+Heal adds the missing instrumentation layer to let LLM agents work their magic.
+And it's useful for humans in complex test codebases, too!
+
+| Feature        | Playwright Trace      | Heal Tracer          | Example: What Heal Adds                                                                   |
+| -------------- | --------------------- | -------------------- | ----------------------------------------------------------------------------------------- |
+| Granularity    | Action-level          | Statement-level      | Shows `let x = calculate()` line-by-line, not just the final `page.click()`.              |
+| Data Format    | ZIP/Binary            | NDJSON Stream        | `{"type":"step","file":"auth.spec.ts","line":12,"val":{"user":"dev"}}`                    |
+| Visual Context | Standard screenshots  | Highlighted locators | An image where the target button is outlined in a neon overlay to prove hit-box accuracy. |
+| Variable State | Limited/Debugger only | Full Variable Values | Captures that `status_code` was `403` inside a hidden helper function.                    |
+| Error Detail   | Standard stack trace  | Serialized Errors    | A JSON object containing the DOM snapshot at the exact millisecond of the throw.          |
+| Timing         | Action durations      | Per-statement timing | Identifies that a specific `if` statement logic took `2.5s` to evaluate.                  |
+| Correlations   | Loose logs/network    | API Correlations     | Links `Trace_ID_99` directly to `Source_Line_45` in the NDJSON stream.                    |
 
 ## Install
 
@@ -73,37 +84,6 @@ declare module '@playwright/test' {
 Per-test output lands at
 `test-results/<test>/heal-data/heal-traces.ndjson`.
 
-### Extend: custom exporters and lifecycles
-
-`configureTracer` registers extra exporters (fanned out alongside
-the default NDJSON exporter) and per-test setup/teardown pairs —
-useful for shipping traces to your own backend or installing
-per-test globals:
-
-```ts
-// playwright.config.ts
-import { defineConfig } from '@playwright/test';
-import { configureTracer } from '@heal-dev/heal-playwright-tracer';
-
-configureTracer({
-  exporters: [(ctx) => new MyHttpExporter(ctx.transport)],
-  lifecycles: [
-    () => ({
-      setup: (ctx) => openTelemetrySession(ctx.testInfo),
-      teardown: () => closeTelemetrySession(),
-    }),
-  ],
-});
-
-export default defineConfig({
-  /* ... */
-});
-```
-
-Full surface: [`src/application/heal-config/types.ts`](src/application/heal-config/types.ts).
-Exporters implement [`HealTraceExporter`](src/domain/trace-event-recorder/port/heal-trace-exporter.ts)
-(`write(record)` + `close()`).
-
 ## Sample output
 
 `heal-data/heal-traces.ndjson` — one record per line:
@@ -140,82 +120,9 @@ Statements that don't touch a locator (plain JS, utility calls,
 `page.goto`) have no `screenshot` field — capture is scoped to the
 Playwright surface where it adds diagnostic signal.
 
-## How it works
+## Architecture, and extending the tracer
 
-```
-  Build time (per worker)                        Runtime (per test)
-  ───────────────────────                        ──────────────────
-
-  test file                                      instrumented test
-      │                                                 │
-      ▼                                                 ▼
-  ┌───────────────────┐                         ┌────────────────┐
-  │  Babel plugin     │  ─── instrumented ───►  │  recorder      │
-  │  code-hook-       │      (__enter /         │  enter/ok/     │
-  │  injector         │       __ok / __throw)   │  throw stream  │
-  └───────────────────┘                         └────────┬───────┘
-                                                         │
-                                                         ▼
-                                                 ┌────────────────┐
-                                                 │  statement     │
-                                                 │  projector     │
-                                                 └────────┬───────┘
-                                                          │
-                                                          ▼
-   playwright.config.ts                           ┌──────────────────┐
-   configureTracer({      ─── extends ──────────► │    composite     │
-     exporters,                                   │     exporter     │
-     lifecycles,                                  └───┬──────────┬───┘
-   })                                                 │          │
-                                                      ▼          ▼
-                                                   NDJSON     custom
-                                                    file     exporters
-                                                           (HTTP, queue, …)
-```
-
-The Babel plugin wraps every leaf statement with a try/catch/finally
-that calls three runtime hooks. The recorder pairs those calls into an
-event stream, the projector folds them into `HealTraceRecord`s, and
-a composite exporter fans them out to the default NDJSON file and
-any exporters registered via `configureTracer`.
-
-The plugin also rewrites `from '@playwright/test'` to
-`from '@heal-dev/heal-playwright-tracer'` in every instrumented file,
-so `test` and `expect` automatically resolve to the traced variants —
-no manual import swap required.
-
-## Why CommonJS?
-
-The package ships as CommonJS (no `"type": "module"` in
-`package.json`, `tsc` emits `module: commonjs`). This is deliberate:
-Playwright's babel transform — the thing that actually loads
-`code-hook-injector` — is itself a CJS module and consumes the plugin
-via `require()`. Shipping ESM would force a dual build with no upside.
-
-ESM consumers still work — use `createRequire` in
-`playwright.config.ts` if you need to resolve the plugin path:
-
-```ts
-// playwright.config.ts  (package.json has "type": "module")
-import { defineConfig } from '@playwright/test';
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
-
-export default defineConfig({
-  // @ts-ignore
-  '@playwright/test': {
-    babelPlugins: [[require.resolve('@heal-dev/heal-playwright-tracer/code-hook-injector')]],
-  },
-});
-```
-
-> **The module format of `playwright.config.ts` must match the
-> `"type"` field of its nearest `package.json`.** A mismatch causes
-> Node to route the file through the wrong loader, typically surfacing
-> as `ReferenceError: exports is not defined in ES module scope` —
-> with a stack trace that blames this plugin even though it has never
-> run. If that happens, fix the config format first.
+See [development.md](docs/development.md)
 
 ## Caveats
 
