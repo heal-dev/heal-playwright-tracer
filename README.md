@@ -23,7 +23,7 @@
 
 # @heal-dev/heal-playwright-tracer
 
-heal-playwright-tracer is an agent-first diagnostic layer for Playwright tests. It gives agents
+heal-playwright-tracer is an agent-first diagnostic layer for your Playwright tests. It gives agents
 (and humans) everything they need to quickly analyze test results.
 
 ## Why
@@ -83,6 +83,16 @@ declare module '@playwright/test' {
 
 Per-test output lands at
 `test-results/<test>/heal-data/heal-traces.ndjson`.
+
+## Usage
+
+1. After installing Heal, run your tests with the usual `npx playwright test` command.
+2. You should see `heal-traces.ndjson`.
+3. You can ask Claude or another agent to use those to understand your test results.
+
+### Claude Skill
+
+See [docs/SKILL.md] for a ready-made Claude skill that you can use.
 
 ## Sample output
 
