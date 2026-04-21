@@ -1,10 +1,6 @@
-Moi je pensais mettre un truc bidon genre
-
 ---
-
 name: playwright-test-diagnosis
 description: Analyze playwright test results
-
 ---
 
 ## Goal
