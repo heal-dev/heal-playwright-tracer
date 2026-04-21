@@ -37,7 +37,9 @@ module.exports = [
         {
           source: 'string',
           style: 'jsdoc',
-          content: `Copyright (c) Myia SAS ${copyrightYear} - All Rights Reserved`,
+          content: `Copyright: (c) Myia SAS ${copyrightYear}.
+This file and its contents are licensed under the AGPLv3 License.
+Please see the LICENSE file at the root of this repository`,
         },
       ],
     },
