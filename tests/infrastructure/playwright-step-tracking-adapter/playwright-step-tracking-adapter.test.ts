@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect, vi } from 'vitest';
 import { PlaywrightStepTrackingAdapter } from '../../../src/infrastructure/playwright-step-tracking-adapter';
 

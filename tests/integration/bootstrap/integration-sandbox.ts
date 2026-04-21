@@ -1,17 +1,6 @@
-// Builds and drives a one-shot Playwright sandbox for the integration suite.
-//
-// Each test file owns its own sandbox: a fresh tmp dir holding a
-// `package.json` that depends on the tracer tarball produced by
-// global-setup, a minimal `playwright.config.ts`, and one spec.
-//
-// `withStubExporter: true` writes `heal-stub-exporter.ts` next to the
-// config and amends the config to register it via `configureTracer`,
-// so the test exercises the user-extension surface end-to-end. The
-// default NDJSON exporter stays wired alongside it.
-//
-// `runPlaywright` tolerates exit code 1 because one of the six
-// scenarios is intentionally a failing assertion. Anything else is
-// re-thrown with stdout/stderr surfaced for debugging.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { execSync, spawn } from 'child_process';
 import * as fs from 'fs';

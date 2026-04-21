@@ -1,40 +1,6 @@
-// Rewrites a `VariableDeclaration` into three AST fragments the
-// trace-hook wrapper needs:
-//
-//   Input (original):
-//     const x = compute(), y = 42;
-//
-//   Output (three AST fragments):
-//     hoistDecl       : `let x, y;`
-//     assignments     : [ `x = compute();`, `y = 42;` ]
-//     varsObject      : `{ x, y }`
-//     bindingNames    : Set { "x", "y" }
-//
-// The trace-hook visitor then emits:
-//
-//   __enter({...});
-//   let x, y;                              <─ hoistDecl
-//   let _traceThrew = false;
-//   try {
-//     x = compute();                       <─ assignments
-//     y = 42;
-//   } catch (e) { ... }
-//   finally { if (!_threw) __ok({ x, y }); }  <─ varsObject
-//
-// Hoisting the bindings OUT of the try block keeps them visible to
-// subsequent statements in the enclosing scope (a `const` declared
-// inside a try is scoped to that try). Passing the `varsObject` to
-// `__ok` lets the recorder snapshot the variable's value on
-// successful completion — which is the whole reason
-// VariableDeclarations need special treatment in the first place.
-//
-// Every generated AST node is tagged with `_traced = true` so the
-// visitor doesn't re-enter them.
-//
-// Destructuring declarations work via `t.getBindingIdentifiers`,
-// which recursively walks ObjectPattern / ArrayPattern / RestElement
-// to produce every individual name. `const { a, b: [c] } = f();`
-// yields `bindingNames = { a, c }`.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type * as BabelTypes from '@babel/types';
 

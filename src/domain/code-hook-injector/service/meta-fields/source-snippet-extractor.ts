@@ -1,10 +1,6 @@
-// Extracts the raw source text for a node, collapsed and length-capped.
-//
-// Produces the `meta.source` field on every __enter event. Slicing
-// the original file between `node.start` and `node.end` is cheap and
-// avoids re-printing the AST; collapsing whitespace keeps multi-line
-// statements readable on a single trace line; the 200-char cap keeps
-// long expressions from blowing up the trace buffer.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 export const DEFAULT_MAX_SOURCE_LEN = 200;
 

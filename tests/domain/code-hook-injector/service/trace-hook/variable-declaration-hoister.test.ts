@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect } from 'vitest';
 import { parse } from '@babel/parser';
 import generate from '@babel/generator';

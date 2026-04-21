@@ -1,18 +1,6 @@
-// Shared `it()` assertions run by both `scenarios-disk.test.ts` and
-// `scenarios-http.test.ts`.
-//
-// Both test files run the same six scenarios (see
-// `../fixtures/scenario-spec`). The contract — what the projector
-// must emit for each scenario — is identical regardless of which
-// transport delivered the records to the assertion. Splitting the
-// two routes while keeping a single assertions module catches
-// divergence: if the disk path emits something the HTTP path doesn't
-// (or vice versa), the same `expect` call fires in only one of the
-// two files.
-//
-// `getTraces` is a lazy getter so the `describe` block can be set up
-// at module load (vitest requires it) while the actual `Map` is
-// populated by `beforeAll` in the importing test file.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { describe, it, expect } from 'vitest';
 import { type ParsedTrace, findStatement, walkStatements } from '../fixtures/parsed-trace';

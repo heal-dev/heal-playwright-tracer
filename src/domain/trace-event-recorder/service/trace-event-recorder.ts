@@ -1,25 +1,6 @@
-// TraceEventRecorder — the domain service that records every
-// Babel-instrumented statement as a stream of trace events.
-//
-// Dependencies are injected:
-//
-//   exporter : TraceEventConsumer — where events go. REQUIRED. The
-//              composition root in `application/trace-event-recorder-runtime`
-//              supplies a bootstrap no-op exporter; the fixture
-//              replaces it per test via `setExporter(projector)`;
-//              tests pass a `TraceEventConsumerStub` from `tests/helpers/`.
-//   clock    : Clock — monotonic ms time source (see ports/clock.ts).
-//              REQUIRED. The composition root wires PerfHooksClock;
-//              tests pass a fake clock.
-//
-// Public methods that callers capture unbound (e.g. assigned to
-// `globalThis.__heal_enter` by the runtime, or re-exported from the
-// runtime module as `export const reset = recorder.reset`) are
-// declared as arrow-function fields so `this` stays correct no
-// matter how they are extracted.
-//
-// This class installs nothing on `globalThis` — that is the
-// composition root's job.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { TraceEventConsumer } from '../port/trace-event-consumer';
 import type { Clock } from '../port/clock';

@@ -1,30 +1,6 @@
-// Turns a `{ name: value }` map of user variables into a trace-safe
-// snapshot that the ok-event-builder attaches to the `meta.vars`
-// field. Called from `__ok` with the bindings the Babel
-// instrumenter passed to it (only for `VariableDeclaration`
-// statements — `const x = compute()` sends `{ x }`).
-//
-// "Trace-safe" means:
-//
-//   - **Size-capped**. Strings are truncated at 200 chars, arrays
-//     keep the first 10 elements, objects keep the first 10 keys.
-//     The trace buffer has to serialize to JSON at teardown and get
-//     attached to a Playwright report; shipping a 50 MB mega-object
-//     would break both.
-//   - **Depth-capped**. Walks stop at depth 2 and replace deeper
-//     values with a `[Ctor]` placeholder.
-//   - **Plain-object only**. Only object literals (`{}` / `Object.create(null)`)
-//     and arrays are walked. Any class instance — Playwright's `Page`, an SDK
-//     adapter holding an API key, a `Date`, a `URL`, the user's domain
-//     types — short-circuits to a `[Ctor]` placeholder. This is the
-//     default-safe rule: walking a class instance can dump private state
-//     (e.g. `apiKey`, auth headers) into the trace, which then ships to the
-//     report. Plain JSON-shaped data — `await response.json()`, config
-//     objects, user records — is what tests actually inspect, and that path
-//     is preserved.
-//   - **Throwing-getter tolerant**. A property whose getter throws
-//     becomes the string `[getter threw]` instead of crashing the
-//     whole ok event.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 export function safeValue(v: unknown, depth = 0): unknown {
   if (v === null || v === undefined) return v;

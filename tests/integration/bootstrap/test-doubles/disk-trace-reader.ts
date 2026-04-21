@@ -1,9 +1,6 @@
-// Disk reader — reads completed traces by walking the sandbox's
-// `test-results/` tree for `heal-traces.ndjson` files.
-//
-// This proves the always-on default exporter (NDJSON, written via
-// `NdjsonExporter` in the composition root) works end-to-end. One
-// file per test, parsed line-by-line into a `ParsedTrace`.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import * as fs from 'fs';
 import * as path from 'path';

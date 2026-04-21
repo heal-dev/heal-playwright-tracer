@@ -1,15 +1,6 @@
-// TraceEventRecorderState — the mutable state held by a single
-// trace-event-recorder instance.
-//
-// Every event builder in ./event-builders/ takes a reference to this
-// shape, reads/mutates what it needs, and writes the resulting event
-// to `state.exporter`. Keeping the state in one explicitly-typed
-// interface (instead of closing it over inside a class's private
-// fields alone) is what lets each event builder live in its own
-// file and be unit-tested with a stub state.
-//
-// The interface is implemented by the `TraceEventRecorder` class
-// itself — the class fields ARE the state, not a wrapped object.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { TraceEventConsumer } from '../port/trace-event-consumer';
 import type { Clock } from '../port/clock';

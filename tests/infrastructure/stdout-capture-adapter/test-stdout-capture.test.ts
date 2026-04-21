@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect, afterEach } from 'vitest';
 import { StdoutCaptureSession } from '../../../src/infrastructure/stdout-capture-adapter';
 

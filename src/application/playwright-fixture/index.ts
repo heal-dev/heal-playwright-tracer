@@ -1,40 +1,6 @@
-// Composition root for the heal-playwright-tracer auto-fixture.
-//
-// Each feature owns its own setup/cleanup; this file is the shopping
-// list. Reading top-to-bottom tells you everything the tracer does to
-// a test and in what order.
-//
-// Built-in features wired here (always-on, OSS):
-//   - runtime (side-effect import installs globalThis.__heal_enter/__heal_ok/__heal_throw)
-//   - step-tracking       → new PlaywrightStepTrackingAdapter(hooks).patch(test)
-//   - test-context        → testContextAdapter.capture(testInfo)
-//   - locator-screenshots → startLocatorScreenshotCapture(page, outDir)
-//   - test-stdout-capture → new StdoutCaptureSession()
-//   - NDJSON exporter         → default trace output to `heal-data/heal-traces.ndjson`
-//
-// User-extensible features (wired via `configureTracer(...)` from the
-// host `playwright.config.ts`):
-//   - exporters       → each factory returns a `HealTraceExporter` composed
-//                   into a tee alongside the default NDJSON exporter
-//   - lifecycles  → each entry exposes `setup(ctx)` + `teardown()`;
-//                   setups run in declaration order at test start,
-//                   teardowns in reverse order in `finally` (LIFO)
-//   - onTestTeardown(fn) → runtime registration, drained before
-//                   lifecycle teardowns so SDKs still see any globals
-//                   a lifecycle installed
-//
-// Output shape (per test): `heal-data/heal-traces.ndjson` — one
-// HealTraceRecord per line. See
-// `../../domain/trace-event-recorder/model/statement-trace-schema.ts`
-// for the contract.
-//
-// Env toggles:
-//   HEAL_TRACE_NDJSON   default on; set to `0`/`false`/`off` to disable.
-//
-// Any backend integration (live-collector HTTP shipping, APM bindings,
-// telemetry-session setup, …) lives in user code and plugs in via
-// `configureTracer`. The fixture knows nothing about any specific
-// backend.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import * as fs from 'fs';
 import * as path from 'path';

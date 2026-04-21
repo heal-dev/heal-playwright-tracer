@@ -1,25 +1,6 @@
-// Composition root for the process-wide trace-event-recorder singleton.
-//
-// `domain/.../factory.ts` exports the `TraceEventRecorder` class —
-// a pure service that requires exporter + clock + staticContext. This
-// file is the thin wrapper that:
-//
-//   1. Wires the default Clock (PerfHooksClock) and the default
-//      SystemInfoProvider (SystemInfoAdapter — reads pid/os/git).
-//   2. Builds one trace-event-recorder wired to `BOOTSTRAP_EXPORTER`
-//      (a no-op that silently swallows any events fired before the
-//      fixture swaps in a real projector via `setExporter(...)` at
-//      the start of every test).
-//   3. Installs `globalThis.__heal_enter/__heal_ok/__heal_throw` so the
-//      Babel-inserted calls find them at runtime.
-//   4. Re-exports the public API (`reset`, `setContext`, `setPage`,
-//      `pushStep`, `popStep`, `setCurrentStatementScreenshot`,
-//      `setExporter`) for the fixture and infrastructure adapters to
-//      import. The singleton shape is the integration surface between
-//      the always-on domain recorder and the per-test fixture.
-//
-// Tests do NOT import this file — they import the domain factory
-// directly and inject stubs + a fake clock.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { TraceEventRecorder, SCHEMA_VERSION } from '../../domain/trace-event-recorder/service';
 import type { TraceEventConsumer } from '../../domain/trace-event-recorder/port/trace-event-consumer';

@@ -1,17 +1,6 @@
-// Detects statements synthesized by @babel/plugin-transform-modules-commonjs.
-//
-// Playwright runs the CJS modules transform BEFORE our instrumenter,
-// so by the time our Statement visitor fires, a user's top-of-file
-// `import X from 'y'` has already become `var _y = require('y')` or
-// `var _y = _interopRequireDefault(require('y'))`. Both forms look
-// like a normal `VariableDeclaration` to the visitor — and if we
-// wrapped them in our try/catch/finally, the first `__enter` call
-// would fire before the recorder module has been required, hitting a
-// `ReferenceError: __enter is not defined`.
-//
-// This detector is the escape hatch: the visitor calls
-// `isGeneratedModuleStatement(node)` at the top of every statement
-// callback and bails out if it returns true.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type * as BabelTypes from '@babel/types';
 

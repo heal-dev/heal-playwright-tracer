@@ -1,25 +1,6 @@
-// Feature: capture per-test Playwright metadata into the runtime.
-//
-// Called once per test from the fixture. The runtime merges this with
-// the static context (pid, gitSha, …) on the next reset() to produce
-// the `meta` event at the top of each trace.
-//
-// Also populates the correlation identifiers that end up under
-// `TestHeader.context` in the NDJSON stream:
-//
-//   - runId       — UUIDv4 identifying ONE test. Shared across
-//                   every attempt (first run + retries) of that
-//                   test. We key by Playwright's `testInfo.testId`
-//                   (a stable hash of file+title+project) and cache
-//                   the generated UUID in a per-instance Map so a
-//                   retry re-running in the same worker sees the
-//                   same id. Playwright retries in the same worker
-//                   by default, so this is the common case.
-//   - attempt     — 1-indexed attempt number = testInfo.retry + 1.
-//   - executionId — optional external id from HEAL_EXECUTION_ID.
-//                   When set, inherited by every worker spawned by
-//                   `npx playwright test`, so every test in the run
-//                   carries the same value. Omitted when unset.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import * as crypto from 'crypto';
 import type { TestInfo } from '@playwright/test';

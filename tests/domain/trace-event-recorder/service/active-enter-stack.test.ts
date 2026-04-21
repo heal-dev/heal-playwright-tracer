@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect } from 'vitest';
 import { ActiveEnterStack } from '../../../../src/domain/trace-event-recorder/service';
 import type { EnterEvent } from '../../../../src/domain/trace-event-recorder/model/trace-schema';

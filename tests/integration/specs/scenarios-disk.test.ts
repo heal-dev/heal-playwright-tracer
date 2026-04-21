@@ -1,8 +1,6 @@
-// Disk-route integration test.
-//
-// Runs the six scenarios in a fresh sandbox, then collects traces by
-// walking `${sandbox}/test-results/**/heal-traces.ndjson` — proving
-// the always-on `NdjsonExporter` works end-to-end.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { beforeAll } from 'vitest';
 import { IntegrationSandbox } from '../bootstrap/integration-sandbox';

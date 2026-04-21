@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect } from 'vitest';
 import { extractLeadingComment } from '../../../../../src/domain/code-hook-injector/service/meta-fields/leading-comment-extractor';
 

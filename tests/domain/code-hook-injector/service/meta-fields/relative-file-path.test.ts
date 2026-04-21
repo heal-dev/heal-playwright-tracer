@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect } from 'vitest';
 import { relFile } from '../../../../../src/domain/code-hook-injector/service/meta-fields/relative-file-path';
 

@@ -1,63 +1,6 @@
-// heal-playwright-tracer — Babel plugin (code-hook injector)
-//
-// Injects hooks into test source files at statement boundaries. Today
-// the only hook family is the **trace hook**, which wraps every leaf
-// statement in:
-//
-//   {
-//     __enter({ file, startLine, ..., source: "STMT" });
-//     let _threw = false;
-//     try { STMT; }
-//     catch (_e) { _threw = true; __throw(_e); throw _e; }
-//     finally { if (!_threw) __ok(vars?); }
-//   }
-//
-// The trace-event-recorder (see ./trace-event-recorder.ts) implements
-// those global hooks at runtime — it maintains a stack of active
-// __enter events so depth/parentSeq/duration are derived at pop time.
-//
-// Hook families live under ./hooks/. Today's only family is
-// ./hooks/trace-hook/ — the try/catch/finally wrapper described
-// above. Future hook families (regex-matched Playwright API calls,
-// DOM-setup hooks, etc.) will add new siblings under
-// ./hooks/custom-hooks/ and plug into the same Statement visitor
-// alongside the trace hook.
-//
-// Shared decisions live in the sibling folders of ./hooks/:
-//   - ./statement-analysis/   — predicates and classifiers (is this
-//                                a leaf? should it be skipped?)
-//   - ./meta-fields/          — extractors for meta-object values
-//                                (source snippet, rel file path,
-//                                enclosing scope label, leading
-//                                comment)
-//   - ./traced-file-matcher.ts         file-level include filter
-//   - ./playwright-import-rewriter.ts  program-level import mutation
-//
-// Usage from playwright.config.ts:
-//
-//   import { defineConfig } from '@playwright/test';
-//   export default defineConfig({
-//     ...({
-//       '@playwright/test': {
-//         babelPlugins: [
-//           [require.resolve('@heal-dev/heal-playwright-tracer/code-hook-injector'),
-//            { include: [/\/tests\//] }],
-//         ],
-//       },
-//     } as any),
-//   });
-//
-// Plugin options:
-//   include : RegExp | string | function | Array<any of those>
-//     Which files to instrument. Each entry matches against the absolute
-//     filename. A string matches by `includes()`; a RegExp by `test()`;
-//     a function by returning truthy. Default: instrument files whose
-//     path contains "/tests/".
-//
-// Every matched file has its `from '@playwright/test'` import
-// transparently rewritten to `from '@heal-dev/heal-playwright-tracer'` so
-// test authors can keep the standard Playwright import and still get our
-// extended `test` with the trace auto-fixture attached.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type * as BabelTypes from '@babel/types';
 import type { PluginObj, PluginPass } from '@babel/core';

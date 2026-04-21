@@ -1,28 +1,6 @@
-// Builds the try/catch/finally wrapper that surrounds every traced
-// statement. Generated shape:
-//
-//   try { /* tryBodyStmts */ }
-//   catch (_traceErr) {
-//     _traceThrew = true;
-//     globalThis.__throw?.(_traceErr);
-//     throw _traceErr;
-//   }
-//   finally {
-//     if (!_traceThrew) globalThis.__ok?.(/* okArgs */);
-//   }
-//
-// Plus a sibling `let _traceThrew = false;` declaration that lives
-// outside the try block so the finally can read it.
-//
-// Why the `_traceThrew` flag instead of just putting __ok in the try
-// body: normal completion AND early exits (`return`, `break`,
-// `continue`) all unwind through the finally, so `__ok` must run on
-// unwind too (to keep the active-enter stack balanced on the
-// recorder side). Only a caught error should skip `__ok`, and the
-// flag lets us distinguish that case without duplicating the call.
-//
-// Both the declaration and the wrapper are tagged `_traced = true`
-// so the Statement visitor doesn't recurse into them.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type * as BabelTypes from '@babel/types';
 import type { Scope } from '@babel/traverse';

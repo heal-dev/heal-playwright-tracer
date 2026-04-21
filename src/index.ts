@@ -1,8 +1,6 @@
-// Package entry — what `import ... from '@heal-dev/heal-playwright-tracer'` hits.
-//
-// The Playwright surface is re-exported so consumers can keep
-// `import { test, expect, devices } from '@heal-dev/heal-playwright-tracer'`
-// as a drop-in replacement for `@playwright/test`.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 export { test, expect, reset } from './application/playwright-fixture';
 

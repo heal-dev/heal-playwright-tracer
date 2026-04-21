@@ -1,24 +1,6 @@
-// Normalizes a thrown value into the `meta.error` shape that the
-// throw-event-builder attaches to every throw event.
-//
-// The tracer must handle every possible thrown shape without
-// crashing — JS lets you `throw anything`, so this function copes
-// with:
-//
-//   - Real `Error` instances (the common case): extracts `name`,
-//     `message`, truncated stack, and walks the `.cause` chain up
-//     to 5 levels deep.
-//   - Non-Error objects: reads `.name` / `.message` / `.stack` /
-//     `.cause` with defensive String() fallbacks.
-//   - Primitives (strings, numbers, null, undefined): wraps them in
-//     `{ message: String(thrown) }`.
-//
-// Every serialized error also carries `isPlaywrightError: boolean`,
-// which the autopilot agent uses to distinguish Playwright-raised
-// failures (timeouts, locator errors) from user-raised assertions.
-// Detection is by constructor name OR by stack frame path —
-// Playwright errors either have a recognizable class name or their
-// stack includes `node_modules/@playwright`.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { SerializedError } from '../../model/serialized-error';
 

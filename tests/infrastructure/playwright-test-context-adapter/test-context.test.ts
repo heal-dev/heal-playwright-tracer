@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TestInfo } from '@playwright/test';
 import { PlaywrightTestContextAdapter } from '../../../src/infrastructure/playwright-test-context-adapter';

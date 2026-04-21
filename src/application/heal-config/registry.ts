@@ -1,17 +1,6 @@
-// Module-local registry that backs the `configureTracer()` /
-// `onTestTeardown()` public API.
-//
-// Why module-local and not `globalThis`: each Playwright worker
-// process imports `playwright.config.ts` on startup, which in turn
-// calls `configureTracer(cfg)` — so each worker owns its own copy of
-// `currentConfig`. No cross-worker state to worry about, no global
-// namespace collision with a host app.
-//
-// Runtime teardown hooks (`onTestTeardown`) use a per-process array
-// that is explicitly reset at the start of every test by the fixture
-// (`resetTeardownHooks`) and drained in `finally`
-// (`drainTeardownHooks`). One slot per hook; callers can register
-// multiple hooks from anywhere during the test.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { HealTracerConfig } from './types';
 

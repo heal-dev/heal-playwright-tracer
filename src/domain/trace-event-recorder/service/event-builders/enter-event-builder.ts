@@ -1,21 +1,6 @@
-// Builds the `{ type: 'enter', ... }` event emitted every time the
-// Babel-injected `__enter(meta)` call fires at the start of a
-// traced statement.
-//
-// Reads from state:
-//   - enterStack.depth() / parentSeq() — to stamp this event's
-//     position in the currently-active call tree.
-//   - clock.now() - startedAt          — for the relative `t` field.
-//   - stepStack                        — so every enter carries the
-//                                        innermost test.step title and
-//                                        the full step path.
-//   - currentPage                      — tolerant page.url() read.
-//
-// Writes to state:
-//   - ++seq
-//   - enterStack.push(event) — the recorder needs this to match the
-//     subsequent __ok/__throw and derive `duration` at that point.
-//   - exporter.write(event)
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { TraceEventRecorderState } from '../trace-event-recorder-state';
 import type { EnterMeta } from '../../model/enter-meta';

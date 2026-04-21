@@ -1,59 +1,6 @@
-// Streaming statement projector.
-//
-// Sits between the trace-event-recorder (which emits raw
-// `TraceEvent`s: meta/enter/ok/throw) and a `HealTraceExporter` (which
-// consumes `HealTraceRecord`s: test-header / statement / test-result).
-//
-// Shape:
-//
-//   recorder.exporter ──▶  StatementProjector (TraceEventConsumer)
-//                           │
-//                           ▼
-//                     HealTraceExporter  (e.g. Tee → [Ndjson, AgentHttp])
-//
-// Because it implements `TraceEventConsumer` it can be plugged into the
-// recorder anywhere a TraceEventConsumerStub would have been. The projector
-// owns the conversion.
-//
-// Incremental emission rules:
-//
-//   - On the first `meta` event after a `clear()`, emit exactly one
-//     `test-header` record to the inner exporter. Subsequent meta
-//     events are ignored (defensive — there should only ever be
-//     one per session).
-//
-//   - On `enter`: create a fresh `Statement` (with `status: 'ok'`,
-//     empty `children`) and register it in `allBySeq`. If the
-//     event's parentSeq is null (root), also register it in
-//     `rootsBySeq`. Otherwise look up the parent in `allBySeq` and
-//     push the new statement into its `children`; if the parent is
-//     not found (shouldn't happen in practice — orphaned due to a
-//     dropped throw) the statement is promoted to a root so it
-//     isn't lost.
-//
-//   - On `ok`: stamp duration/vars on the matching statement. If
-//     the statement is a root, this is the moment its subtree is
-//     complete — write `{ kind: 'statement', statement }` to the
-//     inner exporter and drop it from the working maps.
-//
-//   - On `throw`: same as ok but stamp `status='threw'` and
-//     `error`. Orphan throws (enterSeq === null) are dropped
-//     silently; they are rare and Playwright's own reporting
-//     catches them.
-//
-//   - On `clear()`: reset every internal map so the next test
-//     starts with a blank slate. The inner exporter is NOT closed —
-//     exporter lifecycle is the fixture's responsibility.
-//
-//   - `finalize()` is called by the fixture at test teardown with
-//     the fields that were unknown when the test started (status,
-//     duration, stdout/stderr). It writes a `test-result` record
-//     and then awaits the inner exporter's `close()`.
-//
-// The projector is deliberately not async: `write()` is a sync
-// pass-through so event-builder code paths stay cheap. Only
-// `finalize()` is async because `HealTraceExporter.close()` may flush
-// network I/O.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { TraceEvent, TraceEventConsumer } from '../../port/trace-event-consumer';
 import type { EnterEvent, MetaEvent } from '../../model/trace-schema';

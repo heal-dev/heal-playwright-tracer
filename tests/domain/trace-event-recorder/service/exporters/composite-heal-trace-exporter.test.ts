@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect, vi } from 'vitest';
 import { CompositeHealTraceExporter } from '../../../../../src/domain/trace-event-recorder/service/exporters/composite-heal-trace-exporter';
 import type {

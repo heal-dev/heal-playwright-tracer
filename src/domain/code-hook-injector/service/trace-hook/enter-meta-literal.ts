@@ -1,27 +1,6 @@
-// Builds the `ObjectExpression` that becomes the argument to
-// `globalThis.__enter?.(...)` — i.e. the `meta` object the recorder
-// sees for every traced statement:
-//
-//   { file, startLine, startCol, endLine, endCol, kind, scope,
-//     hasAwait, source, leadingComment? }
-//
-// Each field is produced by a dedicated helper file:
-//   - file           → relative-file-path (relFile)
-//   - start/end      → node.loc (attached by the babel parser)
-//   - kind           → leaf-statement-classifier (kindOf)
-//   - scope          → enclosing-scope-labeler (findScopeName)
-//   - hasAwait       → leaf-statement-classifier (containsAwait)
-//   - source         → source-snippet-extractor (extractSource)
-//   - leadingComment → leading-comment-extractor (extractLeadingComment)
-//
-// `leadingComment` is the only optional field — it is omitted from
-// the emitted ObjectExpression entirely when the statement has no
-// attached user comments, so the runtime meta object stays the
-// same shape as before for the common case.
-//
-// This file is the only place that knows what fields the meta object
-// contains; downstream consumers (the recorder, tests) read field
-// names off the emitted events.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type * as BabelTypes from '@babel/types';
 import type { NodePath } from '@babel/traverse';

@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import * as fs from 'fs';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 

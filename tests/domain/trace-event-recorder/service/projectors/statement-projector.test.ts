@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { describe, it, expect, vi } from 'vitest';
 import { StatementProjector } from '../../../../../src/domain/trace-event-recorder/service/projectors';
 import type { HealTraceRecord } from '../../../../../src/domain/trace-event-recorder/port/heal-trace-exporter';

@@ -1,8 +1,6 @@
-// Normalized error shape attached to every `throw` event emitted by
-// the recorder. The service-level serializer
-// (`../service/serializers/error-serializer.ts`) is what produces values of this
-// shape from arbitrary thrown values; consumers of
-// `../model/trace-schema` only need the type.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 export interface SerializedError {
   name?: string;

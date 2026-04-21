@@ -1,3 +1,6 @@
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 import { transformSync } from '@babel/core';
 import { parse } from '@babel/parser';
 import codeHookInjector from '../../src/application/babel-playwright-tracer-plugin';

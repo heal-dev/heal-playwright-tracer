@@ -1,11 +1,6 @@
-// drawOverlay / removeOverlay — stateless page-side helpers used by
-// the screenshot capture pipeline.
-//
-// They inject and remove a single absolutely-positioned <canvas>
-// with a colored CSS border and `pointer-events: none` so the
-// overlay never intercepts the real event targeted by the user's
-// action. Factored out of the capture session so tests can assert
-// on the draw call without a real browser.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { Page } from 'playwright';
 

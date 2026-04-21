@@ -1,16 +1,6 @@
-// Factory for a TraceEventRecorderState suitable for unit-testing
-// event builders directly. Each event builder is a pure-ish function
-// of `(state, input) → void` that mutates state and writes to
-// `state.exporter` — this helper hands out a pre-wired state plus the
-// live `events` array the stub consumer pushes into, so tests can
-// read what was written without calling any non-production method on
-// the consumer itself.
-//
-// Prefer this over `buildHarness()` (from
-// trace-event-recorder-harness.ts) when you want to test ONE builder
-// in isolation. `buildHarness()` goes through the full
-// TraceEventRecorder API and is the right choice for integration
-// coverage in tests/trace-event-recorder/factory.test.ts.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { createTraceEventConsumerStub } from './trace-event-consumer-stub';
 import {

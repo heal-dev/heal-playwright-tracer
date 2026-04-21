@@ -1,18 +1,6 @@
-// Feature: thread test.step titles onto the runtime step stack.
-//
-// `test.step("foo", async () => {...})` becomes:
-//   runtime.pushStep("foo");
-//   try { await body(); } finally { runtime.popStep(); }
-//
-// Every enter event emitted inside the body then carries `step: "foo"`
-// and `stepPath: [...]` so the resulting trace can be grouped by step.
-//
-// Idempotent — the patch runs once per process and guards against
-// double-wrapping via a Symbol marker placed on the patched target.
-//
-// The runtime hooks are passed in by the composition root (the
-// fixture) — this adapter is pure Playwright plumbing and must not
-// reach back into application or domain modules.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 const PATCHED = Symbol.for('heal-playwright-tracer.step-tracking.patched');
 

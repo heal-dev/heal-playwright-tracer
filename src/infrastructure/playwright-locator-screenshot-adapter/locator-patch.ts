@@ -1,24 +1,6 @@
-// Prototype-patches `Locator.prototype` so every user-facing action
-// becomes: draw magenta overlay → screenshot → original action →
-// remove overlay. The capture pipeline itself lives in
-// ./capture-highlight.ts; this file only owns the list of actions
-// to patch, the idempotent prototype rewrite, and the registry that
-// tells the patched methods which capture session is active.
-//
-// Why the registry: `Locator.prototype` is process-global and patched
-// exactly once, so the patched method bodies are lexically fixed.
-// Looking up `getActiveCaptureSession()` from inside the patch lets
-// the fixture swap per-test sessions without re-patching the prototype.
-//
-// After the screenshot is written to disk, the filename is stamped
-// directly onto the enter event currently on top of the recorder's
-// active-enter stack via the session's `onScreenshotWritten` callback.
-// That's how a statement like `await button.click()` ends up with
-// its highlight screenshot visible at the statement level in the
-// final trace.
-//
-// The patch runs once per process and is idempotent via a Symbol
-// marker on the Locator prototype.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import type { Page } from 'playwright';
 import type { ScreenshotCaptureSession } from './screenshot-capture-session';

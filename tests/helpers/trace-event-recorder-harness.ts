@@ -1,6 +1,6 @@
-// Test harness: build a trace-event-recorder wired to a consumer
-// stub plus a fake clock. Deterministic time keeps event assertions
-// stable across machines.
+/**
+ * Copyright (c) Myia SAS 2026 - All Rights Reserved
+ */
 
 import { TraceEventRecorder } from '../../src/domain/trace-event-recorder/service';
 import type { TraceEventConsumer } from '../../src/domain/trace-event-recorder/port/trace-event-consumer';
