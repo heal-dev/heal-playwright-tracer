@@ -1,8 +1,27 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Output schema for `heal-traces.ndjson` — the agent-facing wire
+// format written one record per line.
+//
+// The file is a stream, not a single document: each line is exactly
+// one `HealTraceRecord`. Per test the records appear in this order:
+//
+//   1. Exactly one `test-header` record (first line). Carries static
+//      per-test metadata and environment fields; the fields known
+//      only at test-end (status, duration, stdout, stderr) live on
+//      `test-result` instead.
+//   2. Zero or more `statement` records, each a ROOT statement
+//      (directly inside the test body). Nested calls live inline
+//      inside `statement.children` and never appear as standalone
+//      records. Consumers must not expect a flat stream of every
+//      executed statement.
+//   3. Exactly one `test-result` record (last line). If it is
+//      missing, the test crashed mid-run and the trace should be
+//      treated as partial.
+//
+// The projector in `../../trace-event-recorder/projectors/
+// statement-projector.ts` is what produces these records from the
+// raw recorder event stream (enter/ok/throw/meta). Consumers (the
+// Heal autopilot agent, humans debugging a failing test) should
+// import these types to stay in sync with the file format.
 
 export const HEAL_TRACE_SCHEMA_VERSION = 1;
 

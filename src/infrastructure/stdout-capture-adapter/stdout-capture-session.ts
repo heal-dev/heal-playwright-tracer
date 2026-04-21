@@ -1,8 +1,22 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Feature: capture every write to process.stdout / process.stderr for
+// the duration of a single test and return them as string arrays when
+// the capture session ends.
+//
+// Why this exists: Playwright's per-test `TestInfo` (the object
+// fixtures receive) does NOT expose stdout/stderr — those fields live
+// on the reporter-side `TestResult`, which is unreachable from inside
+// a fixture. So we intercept writes at the Node level: patch
+// `process.stdout.write` / `process.stderr.write`, buffer each chunk
+// into our own arrays, and still forward the call to the original
+// writer so Playwright's own output (progress, errors, etc.) and
+// reporter piping keep working unchanged.
+//
+// Scope: Playwright runs at most one test per worker at a time, so
+// the patch is always bracketed by construction/`stop()` of a single
+// session. No concurrent callers, no reentrancy.
+//
+// This lives in infrastructure because it mutates Node's process
+// streams — a technical I/O concern the domain does not own.
 
 type WriteFn = typeof process.stdout.write;
 

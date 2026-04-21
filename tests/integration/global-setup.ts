@@ -1,8 +1,19 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Global setup for integration tests. Runs ONCE before any test in
+// tests/integration/**.
+//
+// Responsibilities:
+//   1. `npm run build` — produces dist/.
+//   2. `npm pack` — produces the tarball each sandbox installs from
+//      via a `file:` dependency.
+//   3. Spin up a tiny HTTP server that serves one static HTML page
+//      with a button — the page the Playwright scenarios click.
+//
+// Per-test-file sandbox creation has moved into `IntegrationSandbox`
+// so each test file (`scenarios-disk.test.ts`, `scenarios-http.test.ts`)
+// owns its own tmp dir and doesn't share state with siblings.
+//
+// Teardown closes the HTTP server. Sandboxes are deliberately left on
+// disk for post-mortem inspection — the OS cleans /tmp eventually.
 
 import { execSync } from 'child_process';
 import * as fs from 'fs';

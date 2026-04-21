@@ -1,8 +1,26 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Public types for the tracer's extension API.
+//
+// A user of `@heal-dev/heal-playwright-tracer` extends the tracer by
+// calling `configureTracer(config)` from their `playwright.config.ts`
+// with a `HealTracerConfig`. The config lists:
+//
+//   - `exporters`      — additional `HealTraceExporter` factories. Each factory
+//                    is called once per test with a fresh
+//                    `HealTracerTestContext`. Returned exporters are
+//                    composed into a tee alongside the default NDJSON
+//                    exporter.
+//   - `lifecycles` — per-test setup/teardown pairs. Each entry is a
+//                    `HealTestLifecycleFactory` called once per test;
+//                    the returned `HealTestLifecycle` exposes
+//                    `setup(ctx)` (runs at test start) and `teardown()`
+//                    (runs in `finally`, in reverse order, before the
+//                    trace is finalized). Factories — not singleton
+//                    objects — because per-test instantiation keeps
+//                    any closure state isolated between tests.
+//
+// The design is deliberately narrow: two arrays, no plugin discovery,
+// no magic globals. Anything fancier is the user's
+// `playwright.config.ts` to write.
 
 import type { TestInfo } from '@playwright/test';
 import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/heal-trace-exporter';

@@ -1,8 +1,17 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Shared helpers for integration assertions.
+//
+// `ParsedTrace` is the shape both sinks (DiskTraceSink, HttpTraceSink)
+// expose: a single object per test, assembled from the stream of
+// `HealTraceRecord` lines that the projector emits during the run.
+//
+// The shape collapses three record kinds into one navigable tree:
+//
+//   - `test-header`  → top-level fields (title, context, env, …)
+//   - `statement`    → pushed onto `statements`, with `children` walked transparently
+//   - `test-result`  → final status / duration / stdout / stderr
+//
+// Both sinks produce `Map<testTitle, ParsedTrace>` from this shape so
+// the same `runScenarioAssertions` block can run against either.
 
 import type {
   HealTraceRecord,

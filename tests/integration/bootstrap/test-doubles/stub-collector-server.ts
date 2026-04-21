@@ -1,8 +1,14 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// In-process HTTP collector for the integration suite.
+//
+// Bound to `127.0.0.1:0` so the OS picks a free port; the resolved
+// URL is handed to the sandbox via `STUB_COLLECTOR_URL` so the user
+// exporter (configured via `configureTracer`) can POST to it.
+//
+// The sandbox sends one POST per test on `close()`: the request body
+// is the test's full ndjson stream. We keep each batch as a separate
+// `RawBatch` rather than concatenating, because batch boundaries map
+// 1:1 to tests — `HttpTraceReader` walks them straight into
+// `Map<title, ParsedTrace>` without needing to demux by `runId`.
 
 import * as http from 'http';
 import type { AddressInfo } from 'net';

@@ -1,8 +1,9 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Disk reader — reads completed traces by walking the sandbox's
+// `test-results/` tree for `heal-traces.ndjson` files.
+//
+// This proves the always-on default exporter (NDJSON, written via
+// `NdjsonExporter` in the composition root) works end-to-end. One
+// file per test, parsed line-by-line into a `ParsedTrace`.
 
 import * as fs from 'fs';
 import * as path from 'path';

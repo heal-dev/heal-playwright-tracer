@@ -1,8 +1,14 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Trace-schema — the typed shape of every event the recorder emits.
+//
+// `TraceEvent` is a discriminated union over the `type` field.
+// Consumers within this package (event-builders, exporter adapters,
+// active-enter stack) should use the concrete variants so TS narrows
+// correctly. Anything that reads a generic event out of the exporter
+// discriminates on `event.type` to recover the variant.
+//
+// This file is intentionally runtime-free — it contains only types
+// and a re-exported `SerializedError` alias so the throw event's
+// `error` field is typed end-to-end.
 
 import type { SerializedError } from './serialized-error';
 

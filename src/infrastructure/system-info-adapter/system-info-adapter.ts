@@ -1,8 +1,13 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// SystemInfoAdapter — default SystemInfoProvider implementation.
+//
+// Reads per-process technical state once: Node version, platform,
+// arch, hostname, CI flag, cwd, pid, and the current git SHA
+// (best-effort; empty when not a git repo). All values are captured
+// eagerly at construction so repeated calls are free and the shell
+// out to `git rev-parse HEAD` happens at most once per process.
+//
+// Tests do NOT use this adapter — they pass a stub implementing
+// SystemInfoProvider with fixed values for deterministic assertions.
 
 import * as os from 'os';
 import { execSync } from 'child_process';

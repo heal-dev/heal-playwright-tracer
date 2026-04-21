@@ -1,8 +1,33 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Wraps Playwright's `expect` so that any assertion made against a
+// Locator (`expect(locator).toBeVisible()`, `.not.toHaveText(...)`,
+// etc.) is preceded by a highlight screenshot that is stamped onto
+// the active statement in the trace, mirroring how
+// locator-patch.ts handles locator actions.
+//
+// Implementation shape:
+//
+//   1. `wrapExpect(origExpect)` returns a drop-in callable that
+//      delegates to the real expect but intercepts the first arg. If
+//      it is a Locator (duck-typed by the presence of `.boundingBox`
+//      and `.page`), the resulting assertion is wrapped in a Proxy.
+//
+//   2. The Proxy intercepts:
+//        - `.not` — recursively wraps the returned sub-assertion so
+//          `expect(loc).not.toBeVisible()` still gets a screenshot.
+//        - any property whose name starts with `to` and resolves to a
+//          function — returns a patched async function that takes a
+//          highlighted screenshot (via captureWithHighlight), runs
+//          the original assertion, and cleans up the overlay in a
+//          finally block even if the assertion throws.
+//
+//   3. Static methods on `expect` (soft, poll, configure, extend…)
+//      are copied across. `soft` is the one that follows the same
+//      `(target, ...)` contract, so we wrap it the same way so that
+//      `expect.soft(locator).toBeVisible()` also gets a screenshot.
+//      `poll`, `configure`, and `extend` are copied as-is.
+//
+// Non-locator assertions (`expect(value).toBe(...)`,
+// `expect(page).toHaveURL(...)`) fall through untouched.
 
 import type { Locator, Page } from 'playwright';
 import { removeOverlay } from './overlay-helpers';

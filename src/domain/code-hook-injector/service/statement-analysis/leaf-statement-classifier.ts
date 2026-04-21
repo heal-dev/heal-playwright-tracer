@@ -1,8 +1,28 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Classifies a statement as a traceable leaf.
+//
+// The instrumenter only wraps **leaf** statements — `ExpressionStatement`,
+// `VariableDeclaration`, `Return`, `Throw`, `Break`, `Continue`,
+// `Debugger`. Compound statements (`if`, `for`, `while`, `switch`,
+// `try`, block) are deliberately left transparent: their inner
+// statements get traced individually but the compound itself is not,
+// which lets us avoid branch-coverage tracking and keeps the
+// try/finally stack balanced.
+//
+// Three functions live here because they all answer "what kind of
+// statement is this?":
+//
+//   isLeafStatement(node) → boolean
+//     Gate used by the visitor to decide whether to wrap.
+//
+//   kindOf(node) → string
+//     Short label ("expression" / "variable" / "return" / …) that
+//     ends up in the meta.kind field of each __enter event.
+//
+//   containsAwait(node) → boolean
+//     Does this statement suspend via `await` on its own synchronous
+//     path? Awaits inside a nested arrow don't count — they belong
+//     to a different async context and run independently. Result
+//     becomes the meta.hasAwait field.
 
 import type * as BabelTypes from '@babel/types';
 

@@ -1,8 +1,14 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// HTTP-route integration test.
+//
+// Same six scenarios as the disk variant, but the sandbox's
+// `playwright.config.ts` plugs a stub-exporter via the public
+// `configureTracer({ exporters: [...] })` API. The exporter POSTs each
+// test's records as ndjson to a `StubCollectorServer` started in this
+// process; assertions then run against the in-memory batches.
+//
+// Default `NdjsonExporter` stays wired alongside the stub-exporter,
+// so this run also writes to disk — `scenarios-disk.test.ts` is the
+// file that asserts on that path.
 
 import { beforeAll, afterAll } from 'vitest';
 import { IntegrationSandbox } from '../bootstrap/integration-sandbox';

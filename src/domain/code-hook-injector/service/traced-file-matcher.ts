@@ -1,8 +1,12 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Filename matcher for the tracer plugin.
+//
+// `include` accepts a single entry or an array. Each entry is one of:
+//   - string   → matches if filename.includes(entry)
+//   - RegExp   → matches if entry.test(filename)
+//   - function → matches if entry(filename) is truthy
+//
+// When `include` is null/undefined the default policy instruments any
+// file whose absolute path contains "/tests/".
 
 export type IncludeEntry = string | RegExp | ((filename: string) => unknown);
 export type Include = IncludeEntry | IncludeEntry[] | null | undefined;

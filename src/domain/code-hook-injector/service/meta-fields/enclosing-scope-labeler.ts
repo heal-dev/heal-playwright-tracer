@@ -1,8 +1,21 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Derives a human-readable label for the innermost function enclosing
+// a given AST node. The label becomes the `meta.scope` field on every
+// __enter event.
+//
+// Label rules, in priority order:
+//   1. Named function → its name.
+//   2. Callback inside test()/describe()/step()/it()/beforeEach()/…
+//      → "test: <title>" / "describe: <title>" / …  (picks up the
+//      string literal passed as the first argument to the test API).
+//      This is the rule that makes Playwright traces readable: events
+//      land under "test: checkout happy path" instead of a forest of
+//      `<anonymous>` arrows.
+//   3. Callback assigned to a variable (`const handler = () => {…}`)
+//      → the variable name.
+//   4. Object / class method → the method key name.
+//   5. Anonymous function with none of the above context
+//      → "<anonymous>".
+//   6. Top-level code with no enclosing function → "<module>".
 
 import type * as BabelTypes from '@babel/types';
 import type { NodePath } from '@babel/traverse';

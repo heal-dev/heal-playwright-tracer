@@ -1,8 +1,6 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// Test harness: build a trace-event-recorder wired to a consumer
+// stub plus a fake clock. Deterministic time keeps event assertions
+// stable across machines.
 
 import { TraceEventRecorder } from '../../src/domain/trace-event-recorder/service';
 import type { TraceEventConsumer } from '../../src/domain/trace-event-recorder/port/trace-event-consumer';

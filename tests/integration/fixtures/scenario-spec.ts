@@ -1,8 +1,19 @@
-/**
- * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
- */
+// The single Playwright spec used by both integration test files
+// (`scenarios-disk.test.ts` and `scenarios-http.test.ts`).
+//
+// Six scenarios — one per `test()` block — that exercise every branch
+// the integration suite asserts on:
+//
+//   1. happy path click             → basic pipeline + statement.screenshot
+//   2. failing assertion            → throw-event-builder + test-result.status='failed'
+//   3. test step nesting            → step-tracking → stepPath on statements
+//   4. variable declarations        → hoist transform + __ok({x}) + safeVars
+//   5. nested helper call           → active-enter stack (depth > 0, parentSeq != null)
+//   6. stdout and stderr capture    → test-stdout-capture → test-result.stdout/stderr
+//
+// `INTEGRATION_BASE_URL` is the static HTML page that global-setup
+// serves; it's read at runtime so a single spec works regardless of
+// which port the host server bound.
 
 export const SCENARIO_SPEC = `import { test, expect, type Page } from '@playwright/test';
 
