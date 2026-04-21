@@ -4,7 +4,7 @@
  * Please see the LICENSE file at the root of this repository
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TestInfo } from '@playwright/test';
 import { PlaywrightTestContextAdapter } from '../../../src/infrastructure/playwright-test-context-adapter';
 
