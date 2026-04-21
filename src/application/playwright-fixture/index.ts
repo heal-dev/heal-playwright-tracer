@@ -34,9 +34,6 @@
 // `../../domain/trace-event-recorder/model/statement-trace-schema.ts`
 // for the contract.
 //
-// Env toggles:
-//   HEAL_TRACE_NDJSON   default on; set to `0`/`false`/`off` to disable.
-//
 // Any backend integration (HTTP shipping, APM bindings,
 // telemetry-session setup, …) lives in user code and plugs in via
 // `configureTracer`. The fixture knows nothing about any specific
@@ -85,23 +82,11 @@ type TraceFixtures = {
   _traceAuto: void;
 };
 
-function envFlag(name: string, defaultOn: boolean): boolean {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return defaultOn;
-  const v = raw.toLowerCase();
-  if (v === '0' || v === 'false' || v === 'off' || v === 'no') return false;
-  return true;
-}
-
 function buildHealTraceExporter(
   healDataDir: string,
   ctx: HealTracerTestContext,
 ): HealTraceExporter {
-  const legs: HealTraceExporter[] = [];
-
-  if (envFlag('HEAL_TRACE_NDJSON', true)) {
-    legs.push(new NdjsonExporter(path.join(healDataDir, NDJSON_FILENAME)));
-  }
+  const legs: HealTraceExporter[] = [new NdjsonExporter(path.join(healDataDir, NDJSON_FILENAME))];
 
   const { exporters = [] } = getTracerConfig();
   for (const factory of exporters) {
@@ -112,11 +97,6 @@ function buildHealTraceExporter(
     }
   }
 
-  if (legs.length === 0) {
-    // Neither leg active — return a no-op exporter so the projector
-    // still runs without doing anything user-visible.
-    return { write() {}, async close() {} };
-  }
   return legs.length === 1 ? legs[0] : new CompositeHealTraceExporter(legs);
 }
 
