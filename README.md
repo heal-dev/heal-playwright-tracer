@@ -17,8 +17,8 @@
   <a href="https://github.com/heal-dev/heal-playwright-tracer/actions/workflows/ci.yml"><img src="https://github.com/heal-dev/heal-playwright-tracer/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI"></a>
   <a href="https://codecov.io/gh/heal-dev/heal-playwright-tracer"><img src="https://codecov.io/gh/heal-dev/heal-playwright-tracer/branch/main/graph/badge.svg" alt="codecov"></a>
   <a href="https://www.npmjs.com/package/@heal-dev/heal-playwright-tracer"><img src="https://img.shields.io/npm/v/@heal-dev/heal-playwright-tracer.svg" alt="npm version"></a>
-  <a href="https://www.npmjs.com/package/@heal-dev/heal-playwright-tracer"><img src="https://img.shields.io/node/v/@heal-dev/heal-playwright-tracer.svg" alt="node"></a>
-  <a href="https://www.npmjs.com/package/@playwright/test"><img src="https://img.shields.io/npm/dependency-version/@heal-dev/heal-playwright-tracer/peer/@playwright/test" alt="playwright"></a>
+  <a href="https://www.npmjs.com/package/@heal-dev/heal-playwright-tracer"><img src="https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg" alt="node"></a>
+  <a href="https://www.npmjs.com/package/@playwright/test"><img src="https://img.shields.io/badge/%40playwright%2Ftest-%3E%3D1.50.0-blue.svg" alt="playwright"></a>
 </h4>
 
 # @heal-dev/heal-playwright-tracer
