@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // Turns a `{ name: value }` map of user variables into a trace-safe
 // snapshot that the ok-event-builder attaches to the `meta.vars`
 // field. Called from `__ok` with the bindings the Babel

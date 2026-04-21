@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // Feature: capture every write to process.stdout / process.stderr for
 // the duration of a single test and return them as string arrays when
 // the capture session ends.

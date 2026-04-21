@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // Prototype-patches `Locator.prototype` so every user-facing action
 // becomes: draw magenta overlay → screenshot → original action →
 // remove overlay. The capture pipeline itself lives in

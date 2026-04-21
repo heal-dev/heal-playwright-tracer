@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // Factory for a TraceEventRecorderState suitable for unit-testing
 // event builders directly. Each event builder is a pure-ish function
 // of `(state, input) → void` that mutates state and writes to

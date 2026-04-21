@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // heal-playwright-tracer — Babel plugin (code-hook injector)
 //
 // Injects hooks into test source files at statement boundaries. Today

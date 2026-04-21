@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 import { describe, it, expect } from 'vitest';
 import { buildEnterEvent } from '../../../../../src/domain/trace-event-recorder/service/event-builders/enter-event-builder';
 import {

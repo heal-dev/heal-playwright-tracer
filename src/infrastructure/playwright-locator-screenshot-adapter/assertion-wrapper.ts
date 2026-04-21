@@ -1,3 +1,8 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
 // Wraps Playwright's `expect` so that any assertion made against a
 // Locator (`expect(locator).toBeVisible()`, `.not.toHaveText(...)`,
 // etc.) is preceded by a highlight screenshot that is stamped onto
