@@ -22,11 +22,8 @@
 //   - testCaseId — optional heal test case id parsed from the
 //                 `@heal-<id>` tag.
 //
-// No UUID is minted here. Downstream consumers (sidecar collector,
-// backend) key per-test-attempt state on `(testId, attempt)`.
-// `executionId` is owned by the sidecar (read from its own env) and
-// stamped onto records at ingest — the tracer does not read
-// `HEAL_EXECUTION_ID`.
+// Downstream consumers key per-test-attempt state on
+// `(testId, attempt)`.
 
 import type { TestInfo } from '@playwright/test';
 import { HEAL_TAG_PREFIX } from './heal-tag-prefix';

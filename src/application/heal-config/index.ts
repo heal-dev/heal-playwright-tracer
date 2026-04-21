@@ -6,9 +6,8 @@
 
 // Public surface of the tracer's extension API.
 //
-// Re-exports what a user (or a companion package like
-// `@heal-dev/heal-playwright-tracer-sidecar`) needs to extend the
-// tracer from their own `playwright.config.ts`.
+// Re-exports what a user needs to extend the tracer from their own
+// `playwright.config.ts`.
 
 export { configureTracer, getTracerConfig, onTestTeardown } from './registry';
 

@@ -37,7 +37,7 @@
 // Env toggles:
 //   HEAL_TRACE_NDJSON   default on; set to `0`/`false`/`off` to disable.
 //
-// Any backend integration (live-collector HTTP shipping, APM bindings,
+// Any backend integration (HTTP shipping, APM bindings,
 // telemetry-session setup, …) lives in user code and plugs in via
 // `configureTracer`. The fixture knows nothing about any specific
 // backend.
