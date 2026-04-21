@@ -24,10 +24,10 @@
 # @heal-dev/heal-playwright-tracer
 
 An AI-agent-first diagnostic layer for Playwright tests. Purpose-built
-to give an autopilot agent everything it needs to reason about _why_
-a test failed — statement-level execution traces with timing,
+to give an agent everything it needs to reason about _why_
+a test failed: statement-level execution traces with timing,
 variable values, call depth, serialized errors, highlighted locator
-screenshots, and Playwright API correlations — emitted as a
+screenshots, and Playwright API correlations. Events are emitted as a
 structured NDJSON stream per test, alongside Playwright's own HTML
 report and trace viewer. Useful to humans too, but every design
 decision optimizes for what an LLM needs to see.
