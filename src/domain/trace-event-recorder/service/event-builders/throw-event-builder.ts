@@ -1,7 +1,7 @@
 /**
  * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
+ *   This file and its contents are licensed under the AGPLv3 License.
+ *   Please see the LICENSE file at the root of this repository
  */
 // Builds the `{ type: 'throw', ... }` event emitted when a traced
 // statement throws — the Babel-injected `__throw(err)` call fires

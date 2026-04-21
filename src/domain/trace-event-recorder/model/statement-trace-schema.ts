@@ -1,7 +1,7 @@
 /**
  * Copyright: (c) Myia SAS 2026.
- * This file and its contents are licensed under the AGPLv3 License.
- * Please see the LICENSE file at the root of this repository
+ *   This file and its contents are licensed under the AGPLv3 License.
+ *   Please see the LICENSE file at the root of this repository
  */
 // Output schema for `heal-traces.ndjson` — the agent-facing wire
 // format written one record per line.

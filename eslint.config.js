@@ -27,23 +27,23 @@ module.exports = [
     ...config,
     files: ['src/**/*.ts', 'tests/**/*.ts'],
   })),
-  //   {
-  //     plugins: {
-  //       headers,
-  //     },
-  //     rules: {
-  //       'headers/header-format': [
-  //         'error',
-  //         {
-  //           source: 'string',
-  //           style: 'jsdoc',
-  //           content: `Copyright: (c) Myia SAS ${copyrightYear}.
-  // This file and its contents are licensed under the AGPLv3 License.
-  // Please see the LICENSE file at the root of this repository`,
-  //         },
-  //       ],
-  //     },
-  //   },
+  {
+    plugins: {
+      headers,
+    },
+    rules: {
+      'headers/header-format': [
+        'error',
+        {
+          source: 'string',
+          style: 'jsdoc',
+          content: `Copyright: (c) Myia SAS ${copyrightYear}.
+  This file and its contents are licensed under the AGPLv3 License.
+  Please see the LICENSE file at the root of this repository`,
+        },
+      ],
+    },
+  },
   {
     files: ['src/**/*.ts', 'tests/**/*.ts'],
     languageOptions: {
