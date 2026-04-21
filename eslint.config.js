@@ -8,6 +8,10 @@
 // it doesn't own.
 
 const tseslint = require('typescript-eslint');
+const headers = require('eslint-plugin-headers');
+
+const currentYear = new Date().getFullYear();
+const copyrightYear = currentYear > 2026 ? `2026-${currentYear}` : '2026';
 
 module.exports = [
   {
@@ -23,6 +27,23 @@ module.exports = [
     ...config,
     files: ['src/**/*.ts', 'tests/**/*.ts'],
   })),
+  {
+    plugins: {
+      headers,
+    },
+    rules: {
+      'headers/header-format': [
+        'error',
+        {
+          source: 'string',
+          style: 'jsdoc',
+          content: `Copyright: (c) Myia SAS ${copyrightYear}.
+This file and its contents are licensed under the AGPLv3 License.
+Please see the LICENSE file at the root of this repository`,
+        },
+      ],
+    },
+  },
   {
     files: ['src/**/*.ts', 'tests/**/*.ts'],
     languageOptions: {

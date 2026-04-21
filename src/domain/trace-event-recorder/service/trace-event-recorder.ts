@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 // TraceEventRecorder — the domain service that records every
 // Babel-instrumented statement as a stream of trace events.
 //

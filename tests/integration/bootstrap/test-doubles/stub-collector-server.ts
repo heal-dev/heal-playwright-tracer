@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 // In-process HTTP collector for the integration suite.
 //
 // Bound to `127.0.0.1:0` so the OS picks a free port; the resolved

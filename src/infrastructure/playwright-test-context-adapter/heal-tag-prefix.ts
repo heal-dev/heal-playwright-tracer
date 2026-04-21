@@ -1,4 +1,10 @@
 /**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
+/**
  * Reserved Playwright tag prefix used to embed a Heal test case id on
  * a test. The suffix is the raw test case id, e.g. `@heal-tc_abc123`.
  *
