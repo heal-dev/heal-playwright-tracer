@@ -26,7 +26,7 @@
 heal-playwright-tracer is an agent-first diagnostic layer for your Playwright tests. It gives agents
 (and humans) everything they need to quickly analyze test results.
 
-👉 **Add this to your playwright config, run your tests, point Claude to the heal tests, get more accurate test diagnosis**
+👉 **Add this to your playwright config, run your tests, point Claude to the improved heal trace, get more accurate test diagnosis**
 
 ## Why
 
