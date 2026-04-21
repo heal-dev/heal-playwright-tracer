@@ -94,7 +94,7 @@ Per-test output lands at
 
 ### Claude Skill
 
-See [docs/SKILL.md] for a ready-made Claude skill that you can use.
+See [this Claude skill](docs/SKILL.md) for a starter.
 
 ## Sample output
 
