@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Filename matcher for the tracer plugin.
 //
 // `include` accepts a single entry or an array. Each entry is one of:

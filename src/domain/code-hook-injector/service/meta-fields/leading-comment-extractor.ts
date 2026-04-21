@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Extracts user-written source comments attached to a statement.
 //
 // Produces the optional `meta.leadingComment` field on __enter

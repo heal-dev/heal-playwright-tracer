@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Feature: thread test.step titles onto the runtime step stack.
 //
 // `test.step("foo", async () => {...})` becomes:

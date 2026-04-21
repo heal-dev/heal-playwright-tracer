@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // ActiveEnterStack — the push/pop structure that pairs every
 // `__enter` with its matching `__ok` or `__throw`.
 //

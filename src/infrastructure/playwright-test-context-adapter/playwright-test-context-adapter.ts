@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Feature: capture per-test Playwright metadata into the runtime.
 //
 // Called once per test from the fixture. The runtime merges this with

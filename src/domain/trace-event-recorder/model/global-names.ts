@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Names of the global functions the Babel plugin injects into
 // instrumented source and the recorder entrypoint installs on
 // `globalThis`. Both sides import from here so the contract lives in

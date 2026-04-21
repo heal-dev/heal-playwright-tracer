@@ -2,7 +2,9 @@
  * Copyright: (c) Myia SAS 2026.
  *   This file and its contents are licensed under the AGPLv3 License.
  *   Please see the LICENSE file at the root of this repository
+ *
  */
+
 // Predicate: "should the Statement visitor refuse to wrap this node?"
 //
 // Returns true for every statement kind that the injector must leave
