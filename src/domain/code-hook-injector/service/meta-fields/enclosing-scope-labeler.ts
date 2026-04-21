@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 // Derives a human-readable label for the innermost function enclosing
 // a given AST node. The label becomes the `meta.scope` field on every
 // __enter event.

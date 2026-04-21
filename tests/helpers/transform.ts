@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 import { transformSync } from '@babel/core';
 import { parse } from '@babel/parser';
 import codeHookInjector from '../../src/application/babel-playwright-tracer-plugin';

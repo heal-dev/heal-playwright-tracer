@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 // PerfHooksClock — the default Clock adapter.
 //
 // Wraps `perf_hooks.performance.now()`, the high-resolution monotonic

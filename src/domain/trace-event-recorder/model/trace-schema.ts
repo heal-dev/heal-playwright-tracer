@@ -1,3 +1,9 @@
+/**
+ * Copyright: (c) Myia SAS 2026.
+ * This file and its contents are licensed under the AGPLv3 License.
+ * Please see the LICENSE file at the root of this repository
+ */
+
 // Trace-schema — the typed shape of every event the recorder emits.
 //
 // `TraceEvent` is a discriminated union over the `type` field.
