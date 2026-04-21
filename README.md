@@ -26,9 +26,11 @@
 heal-playwright-tracer is an agent-first diagnostic layer for your Playwright tests. It gives agents
 (and humans) everything they need to quickly analyze test results.
 
+👉 **Add this to your playwright config, run your tests, point Claude to the heal tests, get more accurate test diagnosis**
+
 ## Why
 
-The playwright trace doesn't contain enough data for LLM-based agents such as Claude or Open Code to anlyze tests results reliably.
+The playwright trace doesn't contain enough data for LLM-based agents such as Claude or Open Code to analyze tests results reliably.
 That's because the trace ifs focused on locator evaluation, while real-life tests also evaluate non-playwright code.
 Heal adds the missing instrumentation layer to let LLM agents work their magic.
 And it's useful for humans in complex test codebases, too!
