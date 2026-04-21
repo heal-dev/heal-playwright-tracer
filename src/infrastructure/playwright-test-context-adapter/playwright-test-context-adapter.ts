@@ -4,31 +4,30 @@
 // the static context (pid, gitSha, …) on the next reset() to produce
 // the `meta` event at the top of each trace.
 //
-// Also populates the correlation identifiers that end up under
-// `TestHeader.context` in the NDJSON stream:
+// Correlation identifiers under `TestHeader.context`:
 //
-//   - runId       — UUIDv4 identifying ONE test. Shared across
-//                   every attempt (first run + retries) of that
-//                   test. We key by Playwright's `testInfo.testId`
-//                   (a stable hash of file+title+project) and cache
-//                   the generated UUID in a per-instance Map so a
-//                   retry re-running in the same worker sees the
-//                   same id. Playwright retries in the same worker
-//                   by default, so this is the common case.
-//   - attempt     — 1-indexed attempt number = testInfo.retry + 1.
-//   - executionId — optional external id from HEAL_EXECUTION_ID.
-//                   When set, inherited by every worker spawned by
-//                   `npx playwright test`, so every test in the run
-//                   carries the same value. Omitted when unset.
+//   - testId    — Playwright's `testInfo.testId` (a stable hash of
+//                 file + title + project). Distinct per test, shared
+//                 across every attempt (first run + retries) of the
+//                 same test, including retries that land in a
+//                 different worker. This is the cross-worker
+//                 correlation key.
+//   - attempt   — 1-indexed attempt number = testInfo.retry + 1.
+//   - testCaseId — optional heal test case id parsed from the
+//                 `@heal-<id>` tag.
+//
+// No UUID is minted here. Downstream consumers (sidecar collector,
+// backend) key per-test-attempt state on `(testId, attempt)`.
+// `executionId` is owned by the sidecar (read from its own env) and
+// stamped onto records at ingest — the tracer does not read
+// `HEAL_EXECUTION_ID`.
 
-import * as crypto from 'crypto';
 import type { TestInfo } from '@playwright/test';
 import { HEAL_TAG_PREFIX } from './heal-tag-prefix';
 
 export interface CapturedContext {
-  runId: string;
+  testId: string;
   attempt: number;
-  executionId?: string;
   testCaseId?: number;
 }
 
@@ -37,17 +36,9 @@ export interface TestContextHooks {
 }
 
 export class PlaywrightTestContextAdapter {
-  // Per-instance cache of testId → UUID so retries within the same
-  // worker reuse the runId of the first attempt. The composition
-  // root (the fixture) holds a single instance so this cache lives
-  // for the worker's lifetime.
-  private readonly runIdByTestId = new Map<string, string>();
-
   constructor(private readonly hooks: TestContextHooks) {}
 
   capture(testInfo: TestInfo): CapturedContext {
-    const executionId = process.env.HEAL_EXECUTION_ID;
-    const runId = this.runIdFor(testInfo.testId);
     const attempt = testInfo.retry + 1;
     const rawTagSuffix =
       testInfo.tags.find((t) => t.startsWith(HEAL_TAG_PREFIX))?.slice(HEAL_TAG_PREFIX.length) ?? '';
@@ -68,25 +59,14 @@ export class PlaywrightTestContextAdapter {
       projectName: testInfo.project.name,
       testFile: testInfo.file,
       retry: testInfo.retry,
-      runId,
       attempt,
-      ...(executionId ? { executionId } : {}),
       ...(testCaseId ? { testCaseId } : {}),
     });
 
     return {
-      runId,
+      testId: testInfo.testId,
       attempt,
-      ...(executionId ? { executionId } : {}),
       ...(testCaseId ? { testCaseId } : {}),
     };
-  }
-
-  private runIdFor(testId: string): string {
-    const existing = this.runIdByTestId.get(testId);
-    if (existing) return existing;
-    const fresh = crypto.randomUUID();
-    this.runIdByTestId.set(testId, fresh);
-    return fresh;
   }
 }

@@ -38,12 +38,16 @@ export interface HealTracerTestContext {
    */
   healDataDir: string;
   transport: {
-    runId: string;
+    /**
+     * Playwright's `testInfo.testId` — stable hash of
+     * (file, title, project). Shared across attempts of the same
+     * test, unique per distinct test. Together with `attempt` it
+     * forms the per-test-attempt correlation key.
+     */
+    testId: string;
     attempt: number;
     /** Absolute `testInfo.outputDir` — the pod-side collector reads files from here. */
     rootDir: string;
-    /** Optional external execution id from `HEAL_EXECUTION_ID`. Omitted when unset. */
-    executionId?: string;
   };
 }
 

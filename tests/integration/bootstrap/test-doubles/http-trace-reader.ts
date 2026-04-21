@@ -2,7 +2,7 @@
 // in-memory batches.
 //
 // Each batch corresponds to one test (the user-side stub-exporter
-// flushes once per test on `close()`), so demuxing by `runId` is
+// flushes once per test on `close()`), so demuxing by testId is
 // unnecessary: each batch maps directly to one `ParsedTrace`.
 
 import { type ParsedTrace, assembleTrace } from '../../fixtures/parsed-trace';

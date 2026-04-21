@@ -51,42 +51,25 @@ export interface TestHeader {
 
 /**
  * Per-test correlation identifiers. Populated by the fixture from
- * Playwright's `TestInfo` and from the `HEAL_EXECUTION_ID` env var.
+ * Playwright's `TestInfo`. The global correlation key for a test
+ * attempt is `(testId, attempt)` — two attempts of the same test
+ * share `testId` and differ in `attempt`.
  */
 export interface TestContext {
   /**
    * Playwright's `testInfo.testId` — a stable hash of
    * (file, title, project). Distinct tests always get distinct
-   * values; two attempts of the same test share this value.
-   * Carried so the backend can detect when a single `testCaseId`
-   * has been accidentally applied to multiple tests (typical
-   * cause: `@heal-<id>` placed on a `test.describe(...)` block
-   * and inherited by its children).
+   * values; two attempts of the same test share this value. Also
+   * serves as the cross-worker correlation key: a retry landing in
+   * a different worker still reports the same `testId`.
    */
   testId: string;
-  /**
-   * Auto-generated UUIDv4 identifying ONE test. Shared across every
-   * attempt (first run + retries) of that test — keyed by
-   * Playwright's `testInfo.testId` so retries re-running in the
-   * same worker read the same value back. Two different tests
-   * always get different runIds.
-   */
-  runId: string;
   /**
    * 1-indexed attempt number. Equal to `testInfo.retry + 1` — the
    * first run of a test is attempt 1, the first retry is attempt 2,
    * and so on.
    */
   attempt: number;
-  /**
-   * Optional external execution identifier sourced from the
-   * `HEAL_EXECUTION_ID` env var. When set, inherited by every
-   * worker spawned by a single `npx playwright test` invocation, so
-   * every test in the run carries the same value. Intended for CI
-   * pipelines that want to correlate a heal run with their own job
-   * id. Omitted when the env var is not set.
-   */
-  executionId?: string;
   /**
    * Heal test case id sourced from the `@heal-<id>` Playwright tag
    * on the test (e.g. `test('…', { tag: '@heal-42' }, …)`). The

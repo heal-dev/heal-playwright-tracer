@@ -126,21 +126,19 @@ export function runScenarioAssertions(
       }
     });
 
-    it('shared — every trace has a context with a UUID runId, attempt=1, and distinct runIds across tests', () => {
-      const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    it('shared — every trace has a context with a non-empty testId, attempt=1, and distinct testIds across tests', () => {
       const traces = getTraces();
-      const seenRunIds = new Set<string>();
+      const seenTestIds = new Set<string>();
       for (const [title, trace] of traces.entries()) {
         expect(trace.test.context, `context missing for "${title}"`).toBeDefined();
-        expect(trace.test.context.runId, `context.runId missing for "${title}"`).toMatch(uuidV4);
+        expect(trace.test.context.testId, `context.testId missing for "${title}"`).toMatch(/.+/);
         // No retries configured in the sandbox, so first-attempt = 1.
         expect(trace.test.context.attempt, `context.attempt wrong for "${title}"`).toBe(1);
-        // HEAL_EXECUTION_ID is not set during integration runs.
-        expect(trace.test.context.executionId).toBeUndefined();
-        seenRunIds.add(trace.test.context.runId);
+        seenTestIds.add(trace.test.context.testId);
       }
-      // runId is per-test, so N distinct tests must yield N distinct runIds.
-      expect(seenRunIds.size).toBe(traces.size);
+      // testId is per-test (stable Playwright hash), so N distinct
+      // tests must yield N distinct testIds.
+      expect(seenTestIds.size).toBe(traces.size);
     });
   });
 }
