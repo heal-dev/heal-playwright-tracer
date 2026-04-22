@@ -1,34 +1,26 @@
 name: Private Release
 
 on:
+  pull_request:
+    types: [closed]
+    branches: [main]
   workflow_dispatch:
-    inputs:
-      version_bump:
-        description: 'Version bump type'
-        required: true
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
-          - prepatch
-          - preminor
-          - premajor
-          - prerelease
-        default: 'patch'
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.pull_request.merged == true &&
+       startsWith(github.event.pull_request.title, 'chore: bump version to'))
     permissions:
-      contents: write
       packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: main
           fetch-depth: 0
 
       - name: Setup Node.js
@@ -36,40 +28,18 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Build package for tests
+      - name: Build
         run: npm run build
 
-      - name: Debug git status
-        run: git status
-
-      - name: Bump version
+      - name: Read version from package.json
         id: version
         run: |
-          # Bump version and capture output
-          npm version ${{ inputs.version_bump }} --preid rc -m "chore: bump version to %s"
-
-          # Get the new version
           NEW_VERSION=$(node -p "require('./package.json').version")
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "New version: $NEW_VERSION"
-
-      - name: Push changes
-        run: |
-          git push origin main
-
-      - name: Clean built package for test
-        run: rm -rf dist/
-
-      - name: Build package for release
-        run: npm run build
+          echo "Version to publish: $NEW_VERSION"
 
       - name: Configure npm auth for GitHub Packages
         run: echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
@@ -91,7 +61,7 @@ jobs:
         id: commits
         if: success()
         run: |
-          # Find the previous version bump commit (excluding HEAD which is the current bump)
+          # Find the previous version bump commit
           PREVIOUS_VERSION_COMMIT=$(git log --grep="^chore: bump version to" --format="%H" -n 1 HEAD^ || echo "")
 
           if [ -z "$PREVIOUS_VERSION_COMMIT" ]; then
@@ -158,10 +128,6 @@ jobs:
                         {
                           "type": "mrkdwn",
                           "text": "*Triggered by*\n${{ github.actor }}"
-                        },
-                        {
-                          "type": "mrkdwn",
-                          "text": "*Version bump*\n`${{ inputs.version_bump }}`"
                         }
                       ]
                     },
@@ -211,10 +177,6 @@ jobs:
                         {
                           "type": "mrkdwn",
                           "text": "*Triggered by*\n${{ github.actor }}"
-                        },
-                        {
-                          "type": "mrkdwn",
-                          "text": "*Version bump*\n`${{ inputs.version_bump }}`"
                         }
                       ]
                     },
