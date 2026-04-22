@@ -44,7 +44,7 @@ jobs:
       - name: Configure npm auth for GitHub Packages
         run: echo "//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}" >> ~/.npmrc
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.HEAL_PLAYWRIGHT_TRACER_PAT }}
 
       - name: Publish to GitHub Packages
         run: |
