@@ -91,5 +91,5 @@
   "engines": {
     "node": ">=18"
   },
-  "license": "UNLICENSED"
+  "license": "AGPL-3.0-only"
 }
