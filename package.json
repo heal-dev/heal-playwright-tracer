@@ -4,7 +4,7 @@
     "type": "git",
     "url": "git+https://github.com/heal-dev/heal-playwright-tracer.git"
   },
-  "version": "1.0.1-rc.0",
+  "version": "1.0.1",
   "description": "Statement-level execution tracer for Playwright tests. Records every executed line with timing, variable values, call depth, errors, and Playwright API correlations.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
