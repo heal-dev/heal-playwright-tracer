@@ -40,7 +40,6 @@
 // backend.
 
 import * as fs from 'fs';
-import * as path from 'path';
 import { expect as rawExpect, test as base } from '@playwright/test';
 // Side-effect: installs `globalThis.__heal_enter/__heal_ok/__heal_throw`.
 import {
@@ -61,6 +60,8 @@ import { PlaywrightStepTrackingAdapter } from '../../infrastructure/playwright-s
 import { PlaywrightTestContextAdapter } from '../../infrastructure/playwright-test-context-adapter';
 import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-locator-screenshot-adapter';
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
+import { HealDataLayout } from '../../infrastructure/heal-data-layout';
+import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
@@ -72,21 +73,20 @@ const expect = wrapExpect(
   rawExpect as unknown as (...args: unknown[]) => unknown,
 ) as typeof rawExpect;
 
-// All artifacts this package produces live under this subdirectory of
-// `testInfo.outputDir`, so they stay segregated from Playwright's own
-// output (screenshot/trace/video attachments).
-const HEAL_DATA_SUBDIR = 'heal-data';
-const NDJSON_FILENAME = 'heal-traces.ndjson';
+// All artifacts this package produces live under `HealDataLayout.SUBDIR`
+// of `testInfo.outputDir`, so they stay segregated from Playwright's
+// own output (screenshot/trace/video attachments). The layout class
+// owns the subdir name and ndjson filename.
 
 type TraceFixtures = {
   _traceAuto: void;
 };
 
 function buildHealTraceExporter(
-  healDataDir: string,
+  layout: HealDataLayout,
   ctx: HealTracerTestContext,
 ): HealTraceExporter {
-  const legs: HealTraceExporter[] = [new NdjsonExporter(path.join(healDataDir, NDJSON_FILENAME))];
+  const legs: HealTraceExporter[] = [new NdjsonExporter(layout.ndjsonPath)];
 
   const { exporters = [] } = getTracerConfig();
   for (const factory of exporters) {
@@ -109,12 +109,12 @@ export const test = base.extend<TraceFixtures>({
     async ({ page }, use, testInfo) => {
       const captured = testContextAdapter.capture(testInfo);
 
-      const healDataDir = path.join(testInfo.outputDir, HEAL_DATA_SUBDIR);
-      fs.mkdirSync(healDataDir, { recursive: true });
+      const layout = new HealDataLayout(testInfo.outputDir);
+      fs.mkdirSync(layout.healDataDir, { recursive: true });
 
       const tracerCtx: HealTracerTestContext = {
         testInfo,
-        healDataDir,
+        healDataDir: layout.healDataDir,
         transport: {
           testId: captured.testId,
           attempt: captured.attempt,
@@ -127,7 +127,7 @@ export const test = base.extend<TraceFixtures>({
       // projector, install on the recorder, then reset() — which
       // clears projector state and emits the test-header record via
       // the buildMetaEvent call inside the recorder.
-      const output = buildHealTraceExporter(healDataDir, tracerCtx);
+      const output = buildHealTraceExporter(layout, tracerCtx);
       const projector = new StatementProjector(output);
       setExporter(projector);
       reset();
@@ -138,7 +138,7 @@ export const test = base.extend<TraceFixtures>({
 
       const stopScreenshots = startLocatorScreenshotCapture(
         page,
-        healDataDir,
+        layout.healDataDir,
         setCurrentStatementScreenshot,
       );
       const stdoutSession = new StdoutCaptureSession();
@@ -202,6 +202,11 @@ export const test = base.extend<TraceFixtures>({
           duration: testInfo.duration,
           stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
           stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
+        });
+
+        new ArtifactSummaryPrinter(layout).print({
+          title: testInfo.title,
+          status: testInfo.status ?? 'passed',
         });
       }
     },

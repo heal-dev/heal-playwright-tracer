@@ -107,3 +107,20 @@ export default defineConfig({
 Full surface: [`src/application/heal-config/types.ts`](src/application/heal-config/types.ts).
 Exporters implement [`HealTraceExporter`](src/domain/trace-event-recorder/port/heal-trace-exporter.ts)
 (`write(record)` + `close()`).
+
+## Print per-test artifact paths
+
+Set `HEAL_PRINT_ARTIFACT_PATHS=1` to print the test's output
+directory to stderr after each test. That directory contains every
+artifact Playwright and this tracer produce for the test — the
+nested `heal-data/` folder with the ndjson + highlight screenshots,
+plus Playwright's own `trace.zip` and videos:
+
+```sh
+HEAL_PRINT_ARTIFACT_PATHS=1 npx playwright test
+```
+
+```
+[heal-playwright-tracer] my test (passed)
+  test artifacts dir: /path/to/test-results/foo
+```
