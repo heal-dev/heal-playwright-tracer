@@ -40,11 +40,15 @@ jobs:
           scope: '@heal-dev'
 
       - name: Verify input matches package.json version
+        # Input is passed through an env var (not interpolated into the script)
+        # to prevent workflow script injection via a crafted `confirm_version`
+        # value. See: https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-an-intermediate-environment-variable
+        env:
+          INPUT_VERSION: ${{ inputs.confirm_version }}
         run: |
           PKG_VERSION=$(node -p "require('./package.json').version")
-          INPUT_VERSION='${{ inputs.confirm_version }}'
           if [[ "$PKG_VERSION" != "$INPUT_VERSION" ]]; then
-            echo "::error::Refusing to publish: input '$INPUT_VERSION' does not match package.json '$PKG_VERSION'."
+            echo "::error::Refusing to publish: input does not match package.json version '$PKG_VERSION'."
             echo "::error::Bump package.json on main first, or pass the exact current version as input."
             exit 1
           fi
