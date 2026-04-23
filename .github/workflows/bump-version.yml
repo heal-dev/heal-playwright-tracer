@@ -17,28 +17,28 @@ on:
           - prerelease
         default: 'patch'
 
+# Default to minimum privileges; the bump job elevates only what it needs.
+permissions:
+  contents: read
+
 jobs:
   bump:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      pull-requests: write
+      contents: write # peter-evans/create-pull-request commits the bump
+      pull-requests: write # ...and opens the PR
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false # peter-evans uses the API, not git push
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '20'
-
-      - name: Configure Git
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          node-version-file: .nvmrc
 
       - name: Bump version
         id: version
@@ -48,19 +48,31 @@ jobs:
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
           echo "branch_name=chore/bump-version-v$NEW_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Create branch and commit
-        run: |
-          git checkout -b ${{ steps.version.outputs.branch_name }}
-          git add package.json package-lock.json
-          git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }}"
-          git push origin ${{ steps.version.outputs.branch_name }}
+      - name: Create Pull Request (signed commit via GitHub API)
+        # Commits the working-tree changes through the REST API so that
+        # github-actions[bot] signs the commit automatically — this is required
+        # by the main-branch ruleset once `required_signatures` is enforced.
+        # `git push` from inside a runner produces UNSIGNED commits and would
+        # be rejected.
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ steps.version.outputs.branch_name }}
+          base: main
+          delete-branch: true
+          commit-message: 'chore: bump version to ${{ steps.version.outputs.new_version }}'
+          title: 'chore: bump version to ${{ steps.version.outputs.new_version }}'
+          body: |
+            Automated version bump to `${{ steps.version.outputs.new_version }}`.
 
-      - name: Create Pull Request
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr create \
-            --title "chore: bump version to ${{ steps.version.outputs.new_version }}" \
-            --body "Automated version bump to \`${{ steps.version.outputs.new_version }}\`. Merge this PR, then run the **Private Release** workflow to publish to GitHub Packages." \
-            --base main \
-            --head ${{ steps.version.outputs.branch_name }}
+            After merging this PR, publish by **manually** running the **Private Release** workflow:
+
+            1. Go to *Actions → Private Release → Run workflow*.
+            2. Paste `${{ steps.version.outputs.new_version }}` into the `confirm_version` input (it must match `package.json` exactly).
+            3. A release environment reviewer must approve before the publish starts.
+
+            There is no auto-publish on merge — the manual step is the release gate.
+          sign-commits: true
+          add-paths: |
+            package.json
+            package-lock.json
