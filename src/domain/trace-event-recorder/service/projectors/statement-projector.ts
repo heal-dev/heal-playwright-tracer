@@ -248,7 +248,7 @@ function buildTestHeader(meta: MetaEvent): TestHeader {
     project: meta.projectName ?? '',
     workerIndex: meta.workerIndex ?? 0,
     retry: meta.retry ?? 0,
-    startedAt: (meta.wallTime as number | undefined) ?? 0,
+    startedAt: meta.wallTime ?? 0,
     env,
     context,
   };

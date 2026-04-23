@@ -62,7 +62,7 @@ export class StdoutCaptureSession {
   private makePatched(buf: string[], orig: WriteFn, target: NodeJS.WriteStream): WriteFn {
     return function patched(this: unknown, chunk: unknown, ...rest: unknown[]) {
       buf.push(StdoutCaptureSession.chunkToString(chunk, rest[0]));
-      return (orig as (...a: unknown[]) => boolean).call(target, chunk, ...rest);
+      return Reflect.apply(orig, target, [chunk, ...rest]);
     } as WriteFn;
   }
 

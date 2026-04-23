@@ -36,7 +36,7 @@ export function createCjsArtifactDetector(t: Types): CjsArtifactDetector {
     if (!t.isIdentifier(callee)) return false;
     if (callee.name === 'require') return true;
     if (/^_interop/.test(callee.name) && node.arguments.length > 0) {
-      return isRequireLike(node.arguments[0] as Node);
+      return isRequireLike(node.arguments[0]);
     }
     return false;
   };
