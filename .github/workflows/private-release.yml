@@ -22,7 +22,6 @@ jobs:
     permissions:
       contents: read
       packages: write # publish to GitHub Packages via GITHUB_TOKEN
-      id-token: write # npm provenance / sigstore
 
     steps:
       - name: Checkout code
@@ -76,12 +75,18 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
+          # Private GitHub Packages release (org-restricted). We cannot use
+          # `--provenance` here because npm sigstore attestations are only
+          # emitted for `--access public` packages, and this channel is
+          # deliberately private. The public npmjs.org release — which is
+          # published manually, out of this workflow — is the appropriate
+          # place for provenance later if needed.
           if [[ "$VERSION" == *"-rc."* ]]; then
-            echo "Publishing RC version $VERSION with tag 'rc' to GitHub Packages"
-            npm publish --provenance --tag rc --registry=https://npm.pkg.github.com
+            echo "Publishing RC version $VERSION with tag 'rc' to GitHub Packages (restricted)"
+            npm publish --tag rc --registry=https://npm.pkg.github.com
           else
-            echo "Publishing stable version $VERSION with tag 'latest' to GitHub Packages"
-            npm publish --provenance --registry=https://npm.pkg.github.com
+            echo "Publishing stable version $VERSION with tag 'latest' to GitHub Packages (restricted)"
+            npm publish --registry=https://npm.pkg.github.com
           fi
 
       - name: Get commit history
