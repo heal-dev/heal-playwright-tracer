@@ -83,7 +83,7 @@ export function safeValue(v: unknown, depth = 0): unknown {
 export function safeVars(vars: unknown): Record<string, unknown> | undefined {
   if (!vars || typeof vars !== 'object') return undefined;
   const out: Record<string, unknown> = {};
-  for (const k of Object.keys(vars as Record<string, unknown>)) {
+  for (const k of Object.keys(vars)) {
     try {
       out[k] = safeValue((vars as Record<string, unknown>)[k], 0);
     } catch (_) {
