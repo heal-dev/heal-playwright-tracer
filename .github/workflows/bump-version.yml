@@ -65,6 +65,14 @@ jobs:
         run: |
           gh pr create \
             --title "chore: bump version to ${{ steps.version.outputs.new_version }}" \
-            --body "Automated version bump to \`${{ steps.version.outputs.new_version }}\`. Merge this PR, then run the **Private Release** workflow to publish to GitHub Packages." \
+            --body "Automated version bump to \`${{ steps.version.outputs.new_version }}\`.
+
+          After merging this PR, publish by **manually** running the **Private Release** workflow:
+
+          1. Go to *Actions → Private Release → Run workflow*.
+          2. Paste \`${{ steps.version.outputs.new_version }}\` into the \`confirm_version\` input (it must match \`package.json\` exactly).
+          3. A release environment reviewer must approve before the publish starts.
+
+          There is no auto-publish on merge — the manual step is the release gate." \
             --base main \
             --head ${{ steps.version.outputs.branch_name }}

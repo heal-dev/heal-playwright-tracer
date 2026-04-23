@@ -1,12 +1,15 @@
 name: Private Release
 
 on:
-  # Auto-publish when a version-bump PR merges to main.
-  pull_request:
-    types: [closed]
-    branches: [main]
-  # Manual trigger — restricted by the `release` environment's reviewers.
+  # Manual-only trigger — gated by the `release` environment's required reviewers.
+  # There is intentionally no `pull_request` auto-publish path: a forgeable PR
+  # title is too weak a signal to authorize publishing a package version.
   workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: 'Exact version in package.json to publish (e.g. 1.2.3 or 1.3.0-rc.4). The workflow aborts if this does not match.'
+        required: true
+        type: string
 
 # Default to minimum privileges; the publish job elevates only what it needs.
 permissions:
@@ -15,10 +18,6 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.merged == true &&
-       startsWith(github.event.pull_request.title, 'chore: bump version to'))
     environment: release
     permissions:
       contents: read
@@ -39,6 +38,17 @@ jobs:
           node-version-file: .nvmrc
           registry-url: https://npm.pkg.github.com
           scope: '@heal-dev'
+
+      - name: Verify input matches package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          INPUT_VERSION='${{ inputs.confirm_version }}'
+          if [[ "$PKG_VERSION" != "$INPUT_VERSION" ]]; then
+            echo "::error::Refusing to publish: input '$INPUT_VERSION' does not match package.json '$PKG_VERSION'."
+            echo "::error::Bump package.json on main first, or pass the exact current version as input."
+            exit 1
+          fi
+          echo "Version gate OK: $PKG_VERSION"
 
       - name: Install dependencies
         run: npm ci --ignore-scripts
