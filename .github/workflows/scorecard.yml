@@ -1,0 +1,65 @@
+name: OpenSSF Scorecard
+
+# Runs the OSSF Scorecard analyzer against this repo and uploads results to
+# GitHub Code Scanning (Security tab) and to the public scorecard dashboard.
+# https://github.com/ossf/scorecard-action
+#
+# Expected checks that will now turn green automatically:
+#  - Pinned-Dependencies (workflows already SHA-pinned)
+#  - Token-Permissions (workflows already use least-privilege permissions)
+#  - Branch-Protection (ruleset `Main (hardened)` is active)
+#  - Security-Policy (SECURITY.md exists)
+#  - Code-Review (ruleset requires PR review + CODEOWNERS)
+#  - Signed-Releases (npm publish uses --provenance)
+#  - Dependency-Update-Tool (dependabot.yml)
+#  - Packaging (published to GitHub Packages)
+
+on:
+  # Re-run whenever main changes so the score reflects current posture.
+  push:
+    branches: [main]
+  # Weekly baseline run.
+  schedule:
+    - cron: '0 5 * * 1' # Mondays, 05:00 UTC
+  workflow_dispatch:
+
+# Default to minimum privileges; jobs elevate only what they need.
+permissions:
+  contents: read
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write # upload SARIF to GitHub Code Scanning
+      id-token: write # OIDC token for the public scorecard.dev publication
+      contents: read
+      actions: read # allow the Branch-Protection check to read workflow metadata
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publish to https://scorecard.dev so anyone can verify the score
+          # without needing write access to this repo.
+          publish_results: true
+
+      - name: Upload SARIF results artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+
+      - name: Upload SARIF to GitHub Code Scanning
+        uses: github/codeql-action/upload-sarif@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3
+        with:
+          sarif_file: results.sarif
