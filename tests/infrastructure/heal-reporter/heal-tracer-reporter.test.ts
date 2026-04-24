@@ -11,7 +11,8 @@ import * as path from 'path';
 import type { TestCase, TestResult } from '@playwright/test/reporter';
 import {
   HealTracerReporter,
-  HEAL_NDJSON_ANNOTATION,
+  HEAL_TRACE_CONTEXT_ANNOTATION,
+  type RescueContext,
 } from '../../../src/infrastructure/heal-reporter';
 import type { TestResultRecord } from '../../../src/domain/trace-event-recorder/model/statement-trace-schema';
 
@@ -31,9 +32,20 @@ function writeNdjson(filename: string, content: string): string {
   return p;
 }
 
-function fakeTestCase(ndjsonPath: string | null): TestCase {
-  const annotations = ndjsonPath ? [{ type: HEAL_NDJSON_ANNOTATION, description: ndjsonPath }] : [];
-  return { annotations } as unknown as TestCase;
+function fakeTestCase(
+  ndjsonPath: string | null,
+  opts: { rootDir?: string; id?: string } = {},
+): TestCase {
+  const rootDir = opts.rootDir ?? (ndjsonPath ? path.dirname(path.dirname(ndjsonPath)) : '/tmp');
+  const annotations = ndjsonPath
+    ? [
+        {
+          type: HEAL_TRACE_CONTEXT_ANNOTATION,
+          description: JSON.stringify({ ndjsonPath, rootDir }),
+        },
+      ]
+    : [];
+  return { id: opts.id ?? 'test-id-abc', annotations } as unknown as TestCase;
 }
 
 function fakeResult(overrides: Partial<TestResult> = {}): TestResult {
@@ -217,5 +229,113 @@ describe('HealTracerReporter — crash rescue', () => {
 
     expect(captured.join('')).toContain('failed to append synthetic test-result');
     expect(captured.join('')).toContain('disk full');
+  });
+});
+
+describe('HealTracerReporter — onRescue hook', () => {
+  it('invokes onRescue with the synthetic record and correlation context after a crash rescue', async () => {
+    const p = writeNdjson('hook.ndjson', '{"kind":"test-header","schemaVersion":1}\n');
+    const rootDir = path.dirname(path.dirname(p));
+    const calls: Array<{ record: TestResultRecord; ctx: RescueContext }> = [];
+
+    const reporter = new HealTracerReporter({
+      onRescue: (record, ctx) => {
+        calls.push({ record, ctx });
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase(p, { id: 'tid-42' }),
+      fakeResult({
+        workerIndex: 3,
+        duration: 555,
+        retry: 1,
+        status: 'failed',
+        errors: [{ message: 'Worker process exited unexpectedly (code=null signal=SIGKILL)' }],
+      }),
+    );
+
+    // Hook fires from a microtask — wait one turn before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].record.kind).toBe('test-result');
+    expect(calls[0].record.error?.name).toBe('WorkerCrash');
+    expect(calls[0].ctx).toEqual({
+      ndjsonPath: p,
+      rootDir,
+      testId: 'tid-42',
+      attempt: 2, // retry=1 → attempt=2
+      workerIndex: 3,
+    });
+  });
+
+  it('does NOT invoke onRescue when the reporter short-circuits (NDJSON already terminated)', async () => {
+    const p = writeNdjson(
+      'clean.ndjson',
+      '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    );
+    let called = false;
+    const reporter = new HealTracerReporter({
+      onRescue: () => {
+        called = true;
+      },
+    });
+
+    reporter.onTestEnd(fakeTestCase(p), fakeResult({ status: 'passed', duration: 10 }));
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('does NOT invoke onRescue when the disk append fails', async () => {
+    const p = writeNdjson('append-fail.ndjson', '{"kind":"test-header","schemaVersion":1}\n');
+    let called = false;
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (() => true) as typeof process.stderr.write;
+
+    try {
+      const reporter = new HealTracerReporter({
+        appendFile: () => {
+          throw new Error('disk full');
+        },
+        onRescue: () => {
+          called = true;
+        },
+      });
+      reporter.onTestEnd(fakeTestCase(p), fakeResult({ duration: 1 }));
+      await Promise.resolve();
+    } finally {
+      process.stderr.write = origWrite;
+    }
+    expect(called).toBe(false);
+  });
+
+  it('swallows onRescue hook errors and logs them to process.stderr', async () => {
+    const p = writeNdjson('hook-fail.ndjson', '{"kind":"test-header","schemaVersion":1}\n');
+    const captured: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      captured.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const reporter = new HealTracerReporter({
+        onRescue: () => Promise.reject(new Error('collector unreachable')),
+      });
+      reporter.onTestEnd(fakeTestCase(p), fakeResult({ duration: 1 }));
+      // Give the microtask chain enough turns to drain the rejected
+      // Promise: resolve() → then(hook) → hook returns rejection →
+      // catch() handler runs. Being generous keeps the assertion
+      // robust against future internal chain changes.
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    } finally {
+      process.stderr.write = origWrite;
+    }
+
+    expect(captured.join('')).toContain('onRescue hook failed');
+    expect(captured.join('')).toContain('collector unreachable');
   });
 });

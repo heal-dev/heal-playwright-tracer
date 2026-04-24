@@ -62,7 +62,7 @@ import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-l
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
 import { HealDataLayout } from '../../infrastructure/heal-data-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
-import { HEAL_NDJSON_ANNOTATION } from '../../infrastructure/heal-reporter';
+import { HEAL_TRACE_CONTEXT_ANNOTATION } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
@@ -113,14 +113,18 @@ export const test = base.extend<TraceFixtures>({
       const layout = new HealDataLayout(testInfo.outputDir);
       fs.mkdirSync(layout.healDataDir, { recursive: true });
 
-      // Hand the NDJSON path to the optional `HealTracerReporter` via
-      // an annotation — annotations are serialized over IPC as test
-      // state changes, so the reporter sees the path even if the
-      // worker is SIGKILL'd later. Registered once at test start;
-      // the reporter reads it from `TestCase.annotations`.
+      // Hand the NDJSON path + outputDir to the optional
+      // `HealTracerReporter` via a single JSON-encoded annotation —
+      // annotations are serialized over IPC as test state changes,
+      // so the reporter sees the context even if the worker is
+      // SIGKILL'd later. Registered once at test start; the reporter
+      // reads it from `TestCase.annotations`.
       testInfo.annotations.push({
-        type: HEAL_NDJSON_ANNOTATION,
-        description: layout.ndjsonPath,
+        type: HEAL_TRACE_CONTEXT_ANNOTATION,
+        description: JSON.stringify({
+          ndjsonPath: layout.ndjsonPath,
+          rootDir: testInfo.outputDir,
+        }),
       });
 
       const tracerCtx: HealTracerTestContext = {

@@ -69,7 +69,7 @@ describe('NdjsonTailInspector', () => {
     expect(inspector.endsWithTestResult(p)).toBe(false);
   });
 
-  it('reads only the tail for a file larger than 4 KB', () => {
+  it('handles a file with a large preceding record', () => {
     const filler =
       '{"kind":"statement","statement":{"seq":1,"source":"' + 'x'.repeat(8000) + '"}}\n';
     const p = write(

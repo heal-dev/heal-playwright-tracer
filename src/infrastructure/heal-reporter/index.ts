@@ -6,8 +6,13 @@
 
 import { HealTracerReporter } from './heal-tracer-reporter';
 
-export { HealTracerReporter, HEAL_NDJSON_ANNOTATION } from './heal-tracer-reporter';
-export type { HealTracerReporterDeps } from './heal-tracer-reporter';
+export { HealTracerReporter, HEAL_TRACE_CONTEXT_ANNOTATION } from './heal-tracer-reporter';
+export type {
+  HealTracerReporterDeps,
+  HealTraceContext,
+  RescueContext,
+  RescueHook,
+} from './heal-tracer-reporter';
 export { CrashErrorClassifier } from './crash-error-classifier';
 export type { TestInfoErrorLike } from './crash-error-classifier';
 export { NdjsonTailInspector } from './ndjson-tail-inspector';
