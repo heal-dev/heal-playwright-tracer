@@ -6,7 +6,11 @@
 
 import { HealTracerReporter } from './heal-tracer-reporter';
 
-export { HealTracerReporter, HEAL_TRACE_CONTEXT_ANNOTATION } from './heal-tracer-reporter';
+export {
+  HealTracerReporter,
+  HEAL_PENDING_SUBDIR,
+  healPendingRegistryPath,
+} from './heal-tracer-reporter';
 export type {
   HealTracerReporterDeps,
   HealTraceContext,

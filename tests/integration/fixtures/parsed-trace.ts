@@ -35,6 +35,14 @@ export interface ParsedTrace {
     duration: number;
     stdout?: string[];
     stderr?: string[];
+    /**
+     * Present only when the `test-result` record was synthesized by
+     * the reporter after a crashed worker (see
+     * `TestResultRecord.error`). Absent on clean fixture-written
+     * `test-result` records — used as the discriminator in
+     * reporter-path integration tests.
+     */
+    error?: TestResultRecord['error'];
   };
   /** Root statements, in emission order. Nested calls live in each statement's `children`. */
   statements: Statement[];
@@ -95,6 +103,7 @@ export function assembleTrace(records: readonly HealTraceRecord[]): ParsedTrace 
       duration: result?.duration ?? 0,
       stdout: result?.stdout,
       stderr: result?.stderr,
+      error: result?.error,
     },
     statements,
   };

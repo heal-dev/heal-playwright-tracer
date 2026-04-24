@@ -15,41 +15,45 @@
 // consumers cannot tell whether the test crashed or the file is
 // simply still being written.
 //
-// This reporter subscribes to `onTestEnd` — which fires even for
-// tests whose worker died, because Playwright fabricates the result
-// from the main-process side. It:
+// The reporter subscribes to `onTestEnd` — which fires even when
+// the worker died, because Playwright fabricates the result from
+// the main-process side. It then:
 //
-//   1. Resolves the per-test NDJSON path + outputDir from the
-//      `HEAL_TRACE_CONTEXT_ANNOTATION` the fixture registers at
-//      test start. Using an annotation (not a computed path) means
-//      this reporter never has to duplicate `HealDataLayout`'s
-//      layout logic and stays correct under any user `outputDir`
-//      config.
-//   2. Early-returns if the NDJSON is missing (tracer not wired
-//      for this test) or already ends with `test-result` (fixture
-//      finalized cleanly — normal case).
+//   1. Resolves the per-test NDJSON path + outputDir from a
+//      filesystem REGISTRY the fixture writes at test setup:
+//      `<project.outputDir>/.heal-pending/<testId>-<attempt>.json`.
+//      The registry is needed because Playwright's IPC does NOT
+//      flush fixture-pushed annotations/attachments on abrupt
+//      worker exit (OOM/SIGKILL/`process.exit()`) — exactly the
+//      cases we most need to rescue. A file on disk survives any
+//      abrupt exit. The fixture deletes the registry entry at
+//      teardown, so only crashed tests leave an orphan behind.
+//      This reporter is then the only thing that reads the orphan.
+//   2. Early-returns if the registry entry is missing (tracer not
+//      wired for this test, or fixture already deleted it on clean
+//      teardown) or if the NDJSON already ends with `test-result`
+//      (defensive — shouldn't happen given the deletion step).
 //   3. Classifies the crash via `CrashErrorClassifier` using the
 //      worker's stderr buffer and `TestResult.errors`, then appends
 //      a synthetic `test-result` line with the classified error.
 //   4. If an `onRescue` hook is configured, invokes it (fire-and-
 //      forget) so extension code — e.g. the sidecar's live
-//      collector leg — can observe the rescued record. Under
-//      nominal teardown the live collector already sees every
-//      statement/test-result record via the tracer's exporter
-//      chain; only the crashed-worker case needs this hook because
-//      the in-worker exporters never got to send it.
+//      collector leg — can observe the rescued record.
 //
 // Registration (user-facing, in `playwright.config.ts`):
 //
 //   reporter: [['@heal-dev/heal-playwright-tracer/reporter']]
 //
 // The reporter is pure-optional: when the fixture's own teardown
-// runs to completion (by far the common case), the reporter is a
-// no-op. Users who don't register it simply don't get the crash
-// rescue.
+// runs to completion (by far the common case), the registry entry
+// is deleted and the reporter is a no-op. Users who don't register
+// it simply don't get the crash rescue; the registry file for a
+// crashed test stays on disk indefinitely, which is fine — the
+// per-test output dir is transient anyway.
 
 import * as fs from 'fs';
-import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
+import * as path from 'path';
+import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import type {
   TestResultRecord,
   StatementError,
@@ -58,14 +62,16 @@ import { CrashErrorClassifier } from './crash-error-classifier';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
 
 /**
- * Annotation type written by the fixture at test start so the
- * reporter knows which NDJSON file belongs to which test and what
- * the surrounding Playwright outputDir is. The `description` is a
- * JSON-encoded `HealTraceContext`. Matches the constant used in
- * `src/application/playwright-fixture/index.ts`.
+ * Subdirectory under each project's `outputDir` where the fixture
+ * writes a registry entry per (testId, attempt). Shared string
+ * constant between fixture (writer) and reporter (reader).
  */
-export const HEAL_TRACE_CONTEXT_ANNOTATION = 'heal-trace-context';
+export const HEAL_PENDING_SUBDIR = '.heal-pending';
 
+/**
+ * Shape of the per-test registry entry. Minimal: everything else
+ * the reporter needs is reachable from `TestCase` / `TestResult`.
+ */
 export interface HealTraceContext {
   /** Absolute path to the per-test `heal-traces.ndjson`. */
   ndjsonPath: string;
@@ -114,12 +120,22 @@ export interface HealTracerReporterDeps {
   onRescue?: RescueHook;
 }
 
+/** Path to the registry file for a given (project, test, attempt). */
+export function healPendingRegistryPath(
+  projectOutputDir: string,
+  testId: string,
+  attempt: number,
+): string {
+  return path.join(projectOutputDir, HEAL_PENDING_SUBDIR, `${testId}-${attempt}.json`);
+}
+
 export class HealTracerReporter implements Reporter {
   private readonly classifier: CrashErrorClassifier;
   private readonly inspector: NdjsonTailInspector;
   private readonly appendFile: (path: string, data: string) => void;
   private readonly onRescue: RescueHook | null;
   private readonly stderrByWorker = new Map<number, string[]>();
+  private projectOutputDirs: string[] = [];
 
   constructor(deps: HealTracerReporterDeps = {}) {
     this.classifier = deps.classifier ?? new CrashErrorClassifier();
@@ -130,6 +146,20 @@ export class HealTracerReporter implements Reporter {
 
   printsToStdio(): boolean {
     return false;
+  }
+
+  onBegin(config: FullConfig, _suite: unknown): void {
+    // Capture every project's outputDir so we know where to look
+    // for registry entries regardless of which project a given
+    // TestCase belongs to. Deduped — sharded configs sometimes
+    // repeat the same outputDir across projects.
+    const seen = new Set<string>();
+    for (const project of config.projects) {
+      if (project.outputDir && !seen.has(project.outputDir)) {
+        seen.add(project.outputDir);
+        this.projectOutputDirs.push(project.outputDir);
+      }
+    }
   }
 
   onTestBegin(_test: TestCase, result: TestResult): void {
@@ -145,7 +175,7 @@ export class HealTracerReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
-    const traceCtx = this.resolveTraceContext(test);
+    const traceCtx = this.resolveTraceContext(test, result);
     if (!traceCtx) return;
     if (!fs.existsSync(traceCtx.ndjsonPath)) return;
     if (this.inspector.endsWithTestResult(traceCtx.ndjsonPath)) return;
@@ -169,18 +199,31 @@ export class HealTracerReporter implements Reporter {
     this.invokeRescueHook(record, traceCtx, test, result);
   }
 
-  private resolveTraceContext(test: TestCase): HealTraceContext | null {
-    const annotation = test.annotations.find((a) => a.type === HEAL_TRACE_CONTEXT_ANNOTATION);
-    const description = annotation?.description;
-    if (typeof description !== 'string' || description.length === 0) return null;
-    try {
-      const parsed = JSON.parse(description) as Partial<HealTraceContext>;
-      if (typeof parsed.ndjsonPath !== 'string' || parsed.ndjsonPath.length === 0) return null;
-      if (typeof parsed.rootDir !== 'string' || parsed.rootDir.length === 0) return null;
-      return { ndjsonPath: parsed.ndjsonPath, rootDir: parsed.rootDir };
-    } catch {
-      return null;
+  // Probes each known project outputDir for the per-test registry
+  // entry. First match wins — the same (testId, attempt) never
+  // spans projects. Returns null when no entry exists, which means
+  // either the tracer wasn't wired for this test or the fixture
+  // already cleaned up on a clean teardown.
+  private resolveTraceContext(test: TestCase, result: TestResult): HealTraceContext | null {
+    const attempt = result.retry + 1;
+    for (const outputDir of this.projectOutputDirs) {
+      const entryPath = healPendingRegistryPath(outputDir, test.id, attempt);
+      let body: string;
+      try {
+        body = fs.readFileSync(entryPath, 'utf8');
+      } catch {
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(body) as Partial<HealTraceContext>;
+        if (typeof parsed.ndjsonPath !== 'string' || parsed.ndjsonPath.length === 0) continue;
+        if (typeof parsed.rootDir !== 'string' || parsed.rootDir.length === 0) continue;
+        return { ndjsonPath: parsed.ndjsonPath, rootDir: parsed.rootDir };
+      } catch {
+        continue;
+      }
     }
+    return null;
   }
 
   private buildSyntheticTestResult(
