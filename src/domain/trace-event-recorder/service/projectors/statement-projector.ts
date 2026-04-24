@@ -72,6 +72,7 @@ import {
   type TestHeader,
   type TestResultRecord,
 } from '../../model/statement-trace-schema';
+import { serializeError } from '../serializers/error-serializer';
 
 interface LiveStatement {
   stmt: Statement;
@@ -172,12 +173,38 @@ export class StatementProjector implements TraceEventConsumer {
    * Emit the final `test-result` record and close the underlying
    * exporter. Called once at test teardown; the projector is unusable
    * afterwards.
+   *
+   * Any root statements still live in `rootsBySeq` at this point had
+   * their `__enter` fire but never their matching `__ok`/`__throw` —
+   * typically because Playwright's test timeout short-circuited
+   * teardown before the hanging action rejected. Flushing them as
+   * `threw` with the test-level error makes the partial work visible
+   * in the trace instead of silently dropped.
    */
-  async finalize(result: Omit<TestResultRecord, 'kind'>): Promise<void> {
+  async finalize(result: Omit<TestResultRecord, 'kind'>, pendingError?: unknown): Promise<void> {
     if (this.finalized) return;
+    this.flushPendingRoots(result.duration, pendingError);
     this.finalized = true;
     this.output.write({ kind: 'test-result', ...result });
     await this.output.close();
+  }
+
+  private flushPendingRoots(testDuration: number, pendingError: unknown): void {
+    if (this.rootsBySeq.size === 0) return;
+    const error = serializeError(
+      pendingError ?? new Error('Statement still pending when test ended'),
+    );
+    const pending = Array.from(this.rootsBySeq.entries()).sort(([a], [b]) => a - b);
+    for (const [seq, live] of pending) {
+      live.stmt.status = 'threw';
+      live.stmt.duration = Math.max(0, testDuration - live.stmt.t);
+      live.stmt.error = error;
+      if (live.enter.screenshot) live.stmt.screenshot = live.enter.screenshot;
+      sortChildrenDeep(live.stmt);
+      this.output.write({ kind: 'statement', statement: live.stmt });
+      this.dropSubtree(live.stmt);
+      this.rootsBySeq.delete(seq);
+    }
   }
 
   private maybeEmitRoot(seq: number, live: LiveStatement): void {

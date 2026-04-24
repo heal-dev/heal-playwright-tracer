@@ -324,6 +324,59 @@ describe('statement-projector — lifecycle', () => {
     expect(close).toHaveBeenCalledTimes(1);
   });
 
+  it('finalize() flushes pending root statements as threw with the provided error', async () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(
+      enterEvent({ seq: 1, t: 100, source: 'await page.fill(...);', startLine: 34, endLine: 34 }),
+    );
+
+    const timeoutErr = new Error('Test timeout of 30000ms exceeded.');
+    await projector.finalize({ status: 'timedOut', duration: 30000 }, timeoutErr);
+
+    const statements = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(statements).toHaveLength(1);
+    expect(statements[0].statement.seq).toBe(1);
+    expect(statements[0].statement.status).toBe('threw');
+    expect(statements[0].statement.duration).toBe(29900);
+    expect(statements[0].statement.error?.message).toBe('Test timeout of 30000ms exceeded.');
+
+    const resultIdx = records.findIndex((r) => r.kind === 'test-result');
+    const stmtIdx = records.findIndex((r) => r.kind === 'statement');
+    expect(stmtIdx).toBeLessThan(resultIdx);
+  });
+
+  it('finalize() synthesizes an error for pending roots when no pendingError is given', async () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 1, t: 0 }));
+
+    await projector.finalize({ status: 'failed', duration: 10 });
+
+    const [stmtRec] = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(stmtRec.statement.status).toBe('threw');
+    expect(stmtRec.statement.error?.message).toBe('Statement still pending when test ended');
+  });
+
+  it('finalize() does not flush a root that already emitted ok', async () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 1, t: 0 }));
+    projector.write(okEvent(1));
+
+    await projector.finalize({ status: 'passed', duration: 10 }, new Error('x'));
+
+    const statements = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(statements).toHaveLength(1);
+    expect(statements[0].statement.status).toBe('ok');
+  });
+
   it('finalize() is idempotent and blocks further events', async () => {
     const { records, exporter } = createRecordingExporter();
     const projector = new StatementProjector(exporter);

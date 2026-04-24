@@ -87,6 +87,26 @@ declare module '@playwright/test' {
 Per-test output lands at
 `test-results/<test>/heal-data/heal-traces.ndjson`.
 
+### Optional: capture worker crashes
+
+When a Playwright worker dies before the fixture can finalize its
+trace (OOM, SIGKILL, segfault, `process.exit()`), the per-test
+NDJSON is left without its `test-result` terminator. Register the
+reporter to have the Playwright main process append a synthesized
+`test-result` carrying the classified crash cause (e.g.
+`OutOfMemoryError`, `WorkerCrash`):
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  reporter: [['@heal-dev/heal-playwright-tracer/reporter']],
+  // ...
+});
+```
+
+Fully optional and idempotent: on the common case where the fixture
+finalizes cleanly, the reporter is a no-op.
+
 ## Usage
 
 1. After installing Heal, run your tests with the usual `npx playwright test` command.

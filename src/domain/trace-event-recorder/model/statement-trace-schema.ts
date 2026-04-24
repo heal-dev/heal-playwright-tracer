@@ -186,6 +186,15 @@ export interface TestResultRecord {
   duration: number;
   stdout?: string[];
   stderr?: string[];
+  /**
+   * Present only when this record was synthesized by the optional
+   * `heal-reporter` after a worker crash (OOM, SIGKILL, segfault,
+   * `process.exit()`). Carries the classified crash cause. The
+   * fixture-written `test-result` never sets this — so presence of
+   * the field is itself the signal that the test did not reach
+   * normal teardown.
+   */
+  error?: StatementError;
 }
 
 /**

@@ -62,6 +62,7 @@ import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-l
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
 import { HealDataLayout } from '../../infrastructure/heal-data-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
+import { HEAL_NDJSON_ANNOTATION } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
@@ -111,6 +112,16 @@ export const test = base.extend<TraceFixtures>({
 
       const layout = new HealDataLayout(testInfo.outputDir);
       fs.mkdirSync(layout.healDataDir, { recursive: true });
+
+      // Hand the NDJSON path to the optional `HealTracerReporter` via
+      // an annotation — annotations are serialized over IPC as test
+      // state changes, so the reporter sees the path even if the
+      // worker is SIGKILL'd later. Registered once at test start;
+      // the reporter reads it from `TestCase.annotations`.
+      testInfo.annotations.push({
+        type: HEAL_NDJSON_ANNOTATION,
+        description: layout.ndjsonPath,
+      });
 
       const tracerCtx: HealTracerTestContext = {
         testInfo,
@@ -198,12 +209,20 @@ export const test = base.extend<TraceFixtures>({
         // shipped from here — their attachments are populated by
         // Playwright in a later phase. Users who need them can
         // register a Playwright reporter in their `playwright.config`.
-        await projector.finalize({
-          status: testInfo.status ?? 'passed',
-          duration: testInfo.duration,
-          stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
-          stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
-        });
+        // Pass testInfo.errors[0] so any root statement whose __enter
+        // fired but whose __ok/__throw never did (Playwright aborted
+        // the hanging action on timeout before the catch block could
+        // run) gets flushed as `threw` with the test-level error.
+        const pendingError = testInfo.errors[0] ?? testInfo.error;
+        await projector.finalize(
+          {
+            status: testInfo.status ?? 'passed',
+            duration: testInfo.duration,
+            stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
+            stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
+          },
+          pendingError,
+        );
 
         new ArtifactSummaryPrinter(layout).print({
           title: testInfo.title,
