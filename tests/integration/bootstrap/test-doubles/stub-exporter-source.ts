@@ -14,9 +14,11 @@
 // tree.
 //
 // What it provides: a `HealTraceExporterFactory` that buffers every
-// `HealTraceRecord` written during a test, then on `close()` POSTs
-// the full ndjson body to `STUB_COLLECTOR_URL`. One POST per test —
-// the per-test factory call gives each test its own buffer.
+// `HealTraceRecord` written during a test, captures
+// `ctx.transport.healTracesFilePath` at factory time, then on
+// `close()` POSTs a JSON envelope `{ healTracesFilePath, records }`
+// to `STUB_COLLECTOR_URL`. One POST per test — the per-test factory
+// call gives each test its own buffer and its own captured path.
 //
 // Production-shape: this is exactly the kind of exporter a real user
 // would write to ship traces to their backend, plugged in via the

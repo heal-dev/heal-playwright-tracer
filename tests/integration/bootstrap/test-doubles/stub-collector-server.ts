@@ -26,9 +26,9 @@ export interface RawBatch {
   /** Records from a single test's `close()` POST, in emission order. */
   records: HealTraceRecord[];
   /**
-   * Value of the `x-heal-traces-file-path` request header — the
-   * `healTracesFilePath` the stub exporter captured from its
-   * `HealTracerTestContext`. Asserts the tracer populates the public
+   * The `healTracesFilePath` the stub exporter captured from its
+   * `HealTracerTestContext` and sent in the POST body. Lets
+   * integration assertions verify the tracer populates the public
    * context field end-to-end.
    */
   healTracesFilePath: string | undefined;
