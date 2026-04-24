@@ -11,10 +11,12 @@
 // exporter (configured via `configureTracer`) can POST to it.
 //
 // The sandbox sends one POST per test on `close()`: the request body
-// is the test's full ndjson stream. We keep each batch as a separate
-// `RawBatch` rather than concatenating, because batch boundaries map
-// 1:1 to tests — `HttpTraceReader` walks them straight into
-// `Map<title, ParsedTrace>` without needing to demux by testId.
+// is a JSON envelope `{ healTracesFilePath, records: HealTraceRecord[] }`
+// carrying both the captured public-context field and the per-test
+// record stream. We keep each batch as a separate `RawBatch` rather
+// than concatenating, because batch boundaries map 1:1 to tests —
+// `HttpTraceReader` walks them straight into `Map<title, ParsedTrace>`
+// without needing to demux by testId.
 
 import * as http from 'http';
 import type { AddressInfo } from 'net';
@@ -23,6 +25,13 @@ import type { HealTraceRecord } from '../../../../src/domain/trace-event-recorde
 export interface RawBatch {
   /** Records from a single test's `close()` POST, in emission order. */
   records: HealTraceRecord[];
+  /**
+   * The `healTracesFilePath` the stub exporter captured from its
+   * `HealTracerTestContext` and sent in the POST body. Lets
+   * integration assertions verify the tracer populates the public
+   * context field end-to-end.
+   */
+  healTracesFilePath: string | undefined;
 }
 
 export class StubCollectorServer {
@@ -42,11 +51,14 @@ export class StubCollectorServer {
         req.on('end', () => {
           try {
             const body = Buffer.concat(chunks).toString('utf8');
-            const records = body
-              .split('\n')
-              .filter((line) => line.length > 0)
-              .map((line) => JSON.parse(line) as HealTraceRecord);
-            this.batches.push({ records });
+            const parsed = JSON.parse(body) as {
+              healTracesFilePath?: string;
+              records: HealTraceRecord[];
+            };
+            this.batches.push({
+              records: parsed.records,
+              healTracesFilePath: parsed.healTracesFilePath,
+            });
             res.writeHead(200).end();
           } catch (err) {
             // Surface the parse failure so beforeAll fails loudly,

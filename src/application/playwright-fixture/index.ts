@@ -119,6 +119,7 @@ export const test = base.extend<TraceFixtures>({
           testId: captured.testId,
           attempt: captured.attempt,
           rootDir: testInfo.outputDir,
+          healTracesFilePath: layout.ndjsonPath,
         },
       };
 

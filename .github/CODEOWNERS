@@ -6,14 +6,14 @@
 # `require_code_owner_review: true`.
 
 # Default owners for everything in the repo.
-*                               @PierreOucif @FerdinandL @malomarrec
+*                               @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
 
 # Release-sensitive paths — require an admin on anything that changes how
 # the package is built, published, or consumed.
-/.github/                       @PierreOucif @FerdinandL @malomarrec
-/.github/workflows/             @PierreOucif @FerdinandL @malomarrec
-/package.json                   @PierreOucif @FerdinandL @malomarrec
-/package-lock.json              @PierreOucif @FerdinandL @malomarrec
-/tsconfig.json                  @PierreOucif @FerdinandL @malomarrec
-/LICENSE                        @PierreOucif @FerdinandL @malomarrec
-/SECURITY.md                    @PierreOucif @FerdinandL @malomarrec
+/.github/                       @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/.github/workflows/             @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/package.json                   @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/package-lock.json              @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/tsconfig.json                  @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/LICENSE                        @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno
+/SECURITY.md                    @PierreOucif @FerdinandL @malomarrec @charleschevalier @alexbeno

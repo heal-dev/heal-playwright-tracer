@@ -14,9 +14,11 @@
 // tree.
 //
 // What it provides: a `HealTraceExporterFactory` that buffers every
-// `HealTraceRecord` written during a test, then on `close()` POSTs
-// the full ndjson body to `STUB_COLLECTOR_URL`. One POST per test —
-// the per-test factory call gives each test its own buffer.
+// `HealTraceRecord` written during a test, captures
+// `ctx.transport.healTracesFilePath` at factory time, then on
+// `close()` POSTs a JSON envelope `{ healTracesFilePath, records }`
+// to `STUB_COLLECTOR_URL`. One POST per test — the per-test factory
+// call gives each test its own buffer and its own captured path.
 //
 // Production-shape: this is exactly the kind of exporter a real user
 // would write to ship traces to their backend, plugged in via the
@@ -29,19 +31,25 @@ import type {
   HealTraceExporter,
   HealTraceExporterFactory,
   HealTraceRecord,
+  HealTracerTestContext,
 } from '@heal-dev/heal-playwright-tracer';
 
-export const stubExporterFactory: HealTraceExporterFactory = (): HealTraceExporter => {
-  const buffer: string[] = [];
+export const stubExporterFactory: HealTraceExporterFactory = (
+  ctx: HealTracerTestContext,
+): HealTraceExporter => {
+  const records: unknown[] = [];
+  // Captured at factory time so the collector can assert the tracer
+  // surfaces the authoritative ndjson path through the public context.
+  const healTracesFilePath = ctx.transport.healTracesFilePath;
   return {
     write(record: HealTraceRecord): void {
-      buffer.push(JSON.stringify(record));
+      records.push(record);
     },
     async close(): Promise<void> {
       const url = process.env.STUB_COLLECTOR_URL;
       if (!url) return;
-      const body = buffer.join('\\n') + '\\n';
-      buffer.length = 0;
+      const body = JSON.stringify({ healTracesFilePath, records });
+      records.length = 0;
       const target = new URL(url);
       const lib = target.protocol === 'https:' ? https : http;
       await new Promise<void>((resolve, reject) => {
@@ -52,7 +60,7 @@ export const stubExporterFactory: HealTraceExporterFactory = (): HealTraceExport
             port: target.port,
             path: target.pathname + target.search,
             headers: {
-              'content-type': 'application/x-ndjson',
+              'content-type': 'application/json',
               'content-length': Buffer.byteLength(body).toString(),
             },
           },

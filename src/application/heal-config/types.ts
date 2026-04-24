@@ -54,6 +54,15 @@ export interface HealTracerTestContext {
     attempt: number;
     /** Absolute `testInfo.outputDir`. */
     rootDir: string;
+    /**
+     * Absolute path to the per-test `heal-traces.ndjson` file the
+     * default NDJSON exporter writes to. Sourced from `HealDataLayout`
+     * so it reflects the real on-disk location regardless of user
+     * Playwright config (custom `outputDir`, snapshot paths, etc.).
+     * Exporters that ship artifacts out-of-band can use this as the
+     * authoritative location of the per-test trace file.
+     */
+    healTracesFilePath: string;
   };
 }
 
