@@ -40,6 +40,7 @@
 // backend.
 
 import * as fs from 'fs';
+import * as path from 'path';
 import { expect as rawExpect, test as base } from '@playwright/test';
 // Side-effect: installs `globalThis.__heal_enter/__heal_ok/__heal_throw`.
 import {
@@ -62,6 +63,7 @@ import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-l
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
 import { HealDataLayout } from '../../infrastructure/heal-data-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
+import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
@@ -111,6 +113,29 @@ export const test = base.extend<TraceFixtures>({
 
       const layout = new HealDataLayout(testInfo.outputDir);
       fs.mkdirSync(layout.healDataDir, { recursive: true });
+
+      // Write a registry entry for the optional `HealTracerReporter`
+      // so it can find this test's NDJSON from the main process.
+      // Filesystem-based (not annotation/attachment) because
+      // Playwright's IPC does not flush fixture-pushed annotations
+      // on abrupt worker exit (OOM / SIGKILL / `process.exit()`) —
+      // exactly the crash cases the reporter rescues. A file
+      // written with writeSync before the test body runs survives
+      // any subsequent abrupt exit. Cleaned up in the `finally`
+      // block below on graceful teardown, so only crashed tests
+      // leave an orphan for the reporter to pick up.
+      const attempt = testInfo.retry + 1;
+      const registryPath = healPendingRegistryPath(
+        testInfo.project.outputDir,
+        testInfo.testId,
+        attempt,
+      );
+      fs.mkdirSync(path.dirname(registryPath), { recursive: true });
+      fs.writeFileSync(
+        registryPath,
+        JSON.stringify({ ndjsonPath: layout.ndjsonPath, rootDir: testInfo.outputDir }),
+        'utf8',
+      );
 
       const tracerCtx: HealTracerTestContext = {
         testInfo,
@@ -198,17 +223,36 @@ export const test = base.extend<TraceFixtures>({
         // shipped from here — their attachments are populated by
         // Playwright in a later phase. Users who need them can
         // register a Playwright reporter in their `playwright.config`.
-        await projector.finalize({
-          status: testInfo.status ?? 'passed',
-          duration: testInfo.duration,
-          stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
-          stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
-        });
+        // Pass testInfo.errors[0] so any root statement whose __enter
+        // fired but whose __ok/__throw never did (Playwright aborted
+        // the hanging action on timeout before the catch block could
+        // run) gets flushed as `threw` with the test-level error.
+        const pendingError = testInfo.errors[0] ?? testInfo.error;
+        await projector.finalize(
+          {
+            status: testInfo.status ?? 'passed',
+            duration: testInfo.duration,
+            stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
+            stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
+          },
+          pendingError,
+        );
 
         new ArtifactSummaryPrinter(layout).print({
           title: testInfo.title,
           status: testInfo.status ?? 'passed',
         });
+
+        // Clean teardown: drop the registry entry so the reporter
+        // does NOT rescue this test. The entry only survives when
+        // we never reach this line — i.e. the worker died before
+        // running `finally`. Best-effort: a failed unlink shouldn't
+        // mask the real test result.
+        try {
+          fs.unlinkSync(registryPath);
+        } catch {
+          /* entry may not exist; ignore */
+        }
       }
     },
     { auto: true },

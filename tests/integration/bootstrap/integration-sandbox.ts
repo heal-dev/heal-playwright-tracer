@@ -38,6 +38,13 @@ export interface SandboxOptions {
    * `process.env.STUB_COLLECTOR_URL` on close.
    */
   withStubExporter?: boolean;
+  /**
+   * When true, register the tracer's optional crash-rescue reporter
+   * (`@heal-dev/heal-playwright-tracer/reporter`) alongside `line`.
+   * Needed for any scenario that intentionally crashes a worker or
+   * asserts on the reporter's no-op behavior during a clean run.
+   */
+  withHealReporter?: boolean;
 }
 
 export class IntegrationSandbox {
@@ -134,6 +141,10 @@ configureTracer({ exporters: [stubExporterFactory] });
       : `import { defineConfig } from '@playwright/test';
 `;
 
+    const reporter = this.opts.withHealReporter
+      ? `[['line'], ['@heal-dev/heal-playwright-tracer/reporter']]`
+      : `'line'`;
+
     return `${head}
 export default defineConfig({
   // The undocumented babel-plugin slot is what our tracer plugs into.
@@ -143,7 +154,7 @@ export default defineConfig({
     ],
   },
   testDir: './tests',
-  reporter: 'line',
+  reporter: ${reporter},
   use: {
     headless: true,
     screenshot: 'off',

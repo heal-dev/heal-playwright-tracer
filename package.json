@@ -28,6 +28,10 @@
     "./heal-trace-exporter": {
       "types": "./dist/domain/trace-event-recorder/port/heal-trace-exporter.d.ts",
       "default": "./dist/domain/trace-event-recorder/port/heal-trace-exporter.js"
+    },
+    "./reporter": {
+      "types": "./dist/infrastructure/heal-reporter/index.d.ts",
+      "default": "./dist/infrastructure/heal-reporter/index.js"
     }
   },
   "files": [
