@@ -108,4 +108,84 @@ describe('serializeError', () => {
     const out = serializeError(err);
     expect(out.isPlaywrightError).toBe(false);
   });
+
+  it('strips ANSI color escapes from message', () => {
+    const err = new Error('\x1b[31mboom\x1b[39m');
+    const out = serializeError(err);
+    expect(out.message).toBe('boom');
+  });
+
+  it('strips ANSI color escapes from stack', () => {
+    const err = new Error('x');
+    err.stack = '\x1b[31mError: x\x1b[39m\n    at \x1b[2mfoo\x1b[22m';
+    const out = serializeError(err);
+    expect(out.stack).toBe('Error: x\n    at foo');
+  });
+
+  it('strips ANSI escapes from cause messages and stacks', () => {
+    const top = new Error('top');
+    (top as unknown as { cause: unknown }).cause = {
+      message: '\x1b[31minner\x1b[39m',
+      stack: '\x1b[31mat inner\x1b[39m',
+    };
+    const out = serializeError(top);
+    expect(out.causes).toHaveLength(1);
+    expect(out.causes![0].message).toBe('inner');
+    expect(out.causes![0].stack).toBe('at inner');
+  });
+
+  it('strips ANSI escapes from a primitive cause', () => {
+    const top = new Error('top');
+    (top as unknown as { cause: unknown }).cause = '\x1b[31mraw\x1b[39m';
+    const out = serializeError(top);
+    expect(out.causes).toEqual([{ message: 'raw' }]);
+  });
+
+  it('upgrades a plain-object Playwright TestInfoError with a timeout message to TimeoutError', () => {
+    // Mimics Playwright's `testInfo.errors[0]` shape — plain object,
+    // no `.name`, message colorized.
+    const testInfoError = {
+      message: '\x1b[31mTest timeout of 1500ms exceeded.\x1b[39m',
+      stack: '\x1b[31mTest timeout of 1500ms exceeded.\x1b[39m\n    at <pending>',
+    };
+    const out = serializeError(testInfoError);
+    expect(out.name).toBe('TimeoutError');
+    expect(out.message).toBe('Test timeout of 1500ms exceeded.');
+    expect(out.isPlaywrightError).toBe(true);
+  });
+
+  it('upgrades a plain-object error with a Playwright stack to PlaywrightError', () => {
+    const obj = {
+      message: 'Locator something failed',
+      stack:
+        'Error: Locator something failed\n    at node_modules/@playwright/test/lib/locator.js:1:1',
+    };
+    const out = serializeError(obj);
+    expect(out.name).toBe('PlaywrightError');
+    expect(out.isPlaywrightError).toBe(true);
+  });
+
+  it('does not upgrade plain-object errors that have no Playwright signals', () => {
+    const obj = { message: 'something else' };
+    const out = serializeError(obj);
+    // Falls through to the existing constructor-name fallback.
+    expect(out.name).toBe('Object');
+    expect(out.isPlaywrightError).toBe(false);
+  });
+
+  it('preserves a real Error subclass name (does not upgrade named errors)', () => {
+    class MyTimeout extends Error {
+      constructor() {
+        super('Test timeout of 1500ms exceeded.');
+        this.name = 'MyTimeout';
+      }
+    }
+    const out = serializeError(new MyTimeout());
+    // Even though the message looks Playwright-y, the explicit name wins.
+    expect(out.name).toBe('MyTimeout');
+    // But isPlaywrightError still flags it via the message heuristic — the
+    // message-based signal is for downstream classification, not for
+    // overwriting the user's explicit name.
+    expect(out.isPlaywrightError).toBe(true);
+  });
 });
