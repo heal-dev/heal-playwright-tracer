@@ -8,6 +8,9 @@
   "description": "Statement-level execution tracer for Playwright tests. Records every executed line with timing, variable values, call depth, errors, and Playwright API correlations.",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "bin": {
+    "heal-tracer": "./dist/bin/heal-tracer.js"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -36,11 +39,13 @@
   },
   "files": [
     "dist/",
+    "tracer-viewer-bundle/",
     "README.md"
   ],
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "refresh:viewer": "node scripts/refresh-viewer-bundle.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -74,6 +79,9 @@
   ],
   "peerDependencies": {
     "@playwright/test": ">=1.50.0"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",

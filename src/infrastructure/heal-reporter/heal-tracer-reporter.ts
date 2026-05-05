@@ -55,8 +55,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import type {
-  TestResultRecord,
   StatementError,
+  TestAttachment,
+  TestAttachmentsRecord,
+  TestResultRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 import { CrashErrorClassifier } from './crash-error-classifier';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
@@ -177,26 +179,52 @@ export class HealTracerReporter implements Reporter {
   onTestEnd(test: TestCase, result: TestResult): void {
     const traceCtx = this.resolveTraceContext(test, result);
     if (!traceCtx) return;
-    if (!fs.existsSync(traceCtx.ndjsonPath)) return;
-    if (this.inspector.endsWithTestResult(traceCtx.ndjsonPath)) return;
-
-    const stderr = (this.stderrByWorker.get(result.workerIndex) ?? []).join('');
-    const error = this.classifier.classify(result.errors, stderr);
-    const record = this.buildSyntheticTestResult(result, stderr, error);
-
-    try {
-      this.appendFile(traceCtx.ndjsonPath, JSON.stringify(record) + '\n');
-    } catch (err) {
-      // Never crash the Playwright run because of a rescue write.
-      // Surface the failure on stderr so it shows up in CI logs;
-      // the original test failure is what the user cares about.
-      process.stderr.write(
-        `[heal-playwright-tracer/reporter] failed to append synthetic test-result to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
-      );
+    if (!fs.existsSync(traceCtx.ndjsonPath)) {
+      this.cleanupRegistry(test, result);
       return;
     }
 
-    this.invokeRescueHook(record, traceCtx, test, result);
+    let rescuedRecord: TestResultRecord | null = null;
+
+    // Rescue path: file is missing the `test-result` terminator.
+    // Synthesize one from the worker's stderr buffer + Playwright's
+    // post-mortem `result.errors`.
+    if (!this.inspector.endsWithTestResult(traceCtx.ndjsonPath)) {
+      const stderr = (this.stderrByWorker.get(result.workerIndex) ?? []).join('');
+      const error = this.classifier.classify(result.errors, stderr);
+      rescuedRecord = this.buildSyntheticTestResult(result, stderr, error);
+
+      try {
+        this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
+      } catch (err) {
+        process.stderr.write(
+          `[heal-playwright-tracer/reporter] failed to append synthetic test-result to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
+        );
+        this.cleanupRegistry(test, result);
+        return;
+      }
+    }
+
+    // Always-on: append `test-attachments` so the file ends with the
+    // canonical (test-result, test-attachments) pair. Empty
+    // attachments are emitted unchanged — keeps the file shape
+    // predictable for consumers.
+    const attachmentsRecord = this.buildAttachmentsRecord(result, traceCtx.rootDir);
+    try {
+      this.appendFile(traceCtx.ndjsonPath, JSON.stringify(attachmentsRecord) + '\n');
+    } catch (err) {
+      process.stderr.write(
+        `[heal-playwright-tracer/reporter] failed to append test-attachments to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
+      );
+      this.cleanupRegistry(test, result);
+      return;
+    }
+
+    this.cleanupRegistry(test, result);
+
+    if (rescuedRecord) {
+      this.invokeRescueHook(rescuedRecord, traceCtx, test, result);
+    }
   }
 
   // Probes each known project outputDir for the per-test registry
@@ -224,6 +252,49 @@ export class HealTracerReporter implements Reporter {
       }
     }
     return null;
+  }
+
+  /**
+   * Map Playwright's `result.attachments` to our schema. Paths are
+   * normalized to be relative to the test's outputDir (the parent of
+   * `heal-data/`); attachments whose path falls outside that root
+   * are dropped — they would not be safely servable from the local
+   * viewer's `/api/asset` route.
+   */
+  private buildAttachmentsRecord(result: TestResult, rootDir: string): TestAttachmentsRecord {
+    const rootResolved = path.resolve(rootDir);
+    const attachments: TestAttachment[] = [];
+
+    for (const att of result.attachments ?? []) {
+      if (!att.path) continue;
+      const resolved = path.resolve(att.path);
+      const relRaw = path.relative(rootResolved, resolved);
+      if (relRaw.length === 0 || relRaw.startsWith('..') || path.isAbsolute(relRaw)) {
+        continue;
+      }
+      // Forward slashes on all platforms — the local viewer maps
+      // these into URLs and Windows paths break URL routing.
+      const rel = relRaw.split(path.sep).join('/');
+      attachments.push({
+        name: att.name,
+        path: rel,
+        contentType: att.contentType,
+      });
+    }
+
+    return { kind: 'test-attachments', attachments };
+  }
+
+  private cleanupRegistry(test: TestCase, result: TestResult): void {
+    const attempt = result.retry + 1;
+    for (const outputDir of this.projectOutputDirs) {
+      const entryPath = healPendingRegistryPath(outputDir, test.id, attempt);
+      try {
+        fs.unlinkSync(entryPath);
+      } catch {
+        /* entry may not exist; ignore */
+      }
+    }
   }
 
   private buildSyntheticTestResult(

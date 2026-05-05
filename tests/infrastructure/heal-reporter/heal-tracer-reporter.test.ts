@@ -90,6 +90,22 @@ function readLines(filePath: string): string[] {
     .filter((l) => l.length > 0);
 }
 
+interface ParsedRecord {
+  kind: string;
+  [key: string]: unknown;
+}
+
+/** Find the last record in the NDJSON whose `kind` matches. */
+function lastRecordOfKind(lines: string[], kind: string): ParsedRecord {
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const parsed = JSON.parse(lines[i]) as ParsedRecord;
+    if (parsed.kind === kind) {
+      return parsed;
+    }
+  }
+  throw new Error(`No record of kind=${kind} found`);
+}
+
 function newReporter(deps: ConstructorParameters<typeof HealTracerReporter>[0] = {}) {
   const reporter = new HealTracerReporter(deps);
   reporter.onBegin?.(fakeConfig(), {} as never);
@@ -97,16 +113,19 @@ function newReporter(deps: ConstructorParameters<typeof HealTracerReporter>[0] =
 }
 
 describe('HealTracerReporter — no-op paths', () => {
-  it('does nothing when the NDJSON already ends with a test-result', () => {
+  it('appends only the test-attachments record when the NDJSON already ends with a test-result', () => {
     const { ndjsonPath } = setupTest({
       ndjsonContent:
         '{"kind":"test-header","schemaVersion":1}\n' +
         '{"kind":"test-result","status":"passed","duration":10}\n',
     });
-    const before = fs.readFileSync(ndjsonPath);
     const reporter = newReporter();
     reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 10 }));
-    expect(fs.readFileSync(ndjsonPath)).toEqual(before);
+    const lines = readLines(ndjsonPath);
+    // No new test-result was appended — the existing one remains.
+    expect(lines.filter((l) => l.includes('"test-result"'))).toHaveLength(1);
+    // But test-attachments was appended.
+    expect(lines.at(-1)).toContain('"test-attachments"');
   });
 
   it('does nothing when no registry entry exists for this test', () => {
@@ -153,7 +172,7 @@ describe('HealTracerReporter — crash rescue', () => {
     );
 
     const lines = readLines(ndjsonPath);
-    const last = JSON.parse(lines[lines.length - 1]) as TestResultRecord;
+    const last = lastRecordOfKind(lines, 'test-result') as unknown as TestResultRecord;
     expect(last.kind).toBe('test-result');
     expect(last.status).toBe('failed');
     expect(last.duration).toBe(4000);
@@ -175,7 +194,7 @@ describe('HealTracerReporter — crash rescue', () => {
     );
 
     const lines = readLines(ndjsonPath);
-    const last = JSON.parse(lines[lines.length - 1]) as TestResultRecord;
+    const last = lastRecordOfKind(lines, 'test-result') as unknown as TestResultRecord;
     expect(last.error?.name).toBe('WorkerCrash');
     expect(last.error?.message).toContain('SIGKILL');
   });
@@ -228,8 +247,14 @@ describe('HealTracerReporter — crash rescue', () => {
       }),
     );
 
-    const lastA = JSON.parse(readLines(a.ndjsonPath).at(-1)!) as TestResultRecord;
-    const lastB = JSON.parse(readLines(b.ndjsonPath).at(-1)!) as TestResultRecord;
+    const lastA = lastRecordOfKind(
+      readLines(a.ndjsonPath),
+      'test-result',
+    ) as unknown as TestResultRecord;
+    const lastB = lastRecordOfKind(
+      readLines(b.ndjsonPath),
+      'test-result',
+    ) as unknown as TestResultRecord;
     expect(lastA.error?.name).toBe('OutOfMemoryError');
     expect(lastB.error?.name).toBe('WorkerCrash');
     expect(lastA.stderr?.join('') ?? '').not.toContain('harmless debug log');
@@ -262,12 +287,18 @@ describe('HealTracerReporter — crash rescue', () => {
       }),
     );
 
-    const last2 = JSON.parse(readLines(t2.ndjsonPath).at(-1)!) as TestResultRecord;
+    const last2 = lastRecordOfKind(
+      readLines(t2.ndjsonPath),
+      'test-result',
+    ) as unknown as TestResultRecord;
     expect(last2.error?.name).toBe('WorkerCrash');
     expect(last2.stderr).toBeUndefined();
 
     // First test's NDJSON still got its own rescue, unaffected.
-    const last1 = JSON.parse(readLines(t1.ndjsonPath).at(-1)!) as TestResultRecord;
+    const last1 = lastRecordOfKind(
+      readLines(t1.ndjsonPath),
+      'test-result',
+    ) as unknown as TestResultRecord;
     expect(last1.error?.name).toBe('OutOfMemoryError');
   });
 
@@ -293,6 +324,126 @@ describe('HealTracerReporter — crash rescue', () => {
 
     expect(captured.join('')).toContain('failed to append synthetic test-result');
     expect(captured.join('')).toContain('disk full');
+  });
+});
+
+describe('HealTracerReporter — attachments', () => {
+  it('appends a test-attachments record on clean tests, with paths relative to the test outputDir', () => {
+    const { ndjsonPath, rootDir } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          {
+            name: 'trace',
+            path: path.join(rootDir, 'trace.zip'),
+            contentType: 'application/zip',
+          },
+          {
+            name: 'video',
+            path: path.join(rootDir, 'pages', 'page-1', 'video.webm'),
+            contentType: 'video/webm',
+          },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const lines = readLines(ndjsonPath);
+    const last = JSON.parse(lines.at(-1)!) as {
+      kind: string;
+      attachments: { name: string; path: string; contentType: string }[];
+    };
+    expect(last.kind).toBe('test-attachments');
+    expect(last.attachments).toEqual([
+      { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
+      {
+        name: 'video',
+        path: 'pages/page-1/video.webm',
+        contentType: 'video/webm',
+      },
+    ]);
+  });
+
+  it('writes an empty test-attachments record when Playwright produced no attachments', () => {
+    const { ndjsonPath } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const reporter = newReporter();
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 10 }));
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      kind: string;
+      attachments: unknown[];
+    };
+    expect(last.kind).toBe('test-attachments');
+    expect(last.attachments).toEqual([]);
+  });
+
+  it('drops attachments whose path falls outside the test outputDir', () => {
+    const { ndjsonPath } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          {
+            name: 'rogue',
+            path: '/etc/passwd',
+            contentType: 'text/plain',
+          },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: unknown[];
+    };
+    expect(last.attachments).toEqual([]);
+  });
+
+  it('also appends test-attachments when rescuing a crashed test (after the synthetic test-result)', () => {
+    const { ndjsonPath, rootDir } = setupTest();
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'failed',
+        duration: 100,
+        errors: [{ message: 'Worker process exited unexpectedly' }],
+        attachments: [
+          {
+            name: 'trace',
+            path: path.join(rootDir, 'trace.zip'),
+            contentType: 'application/zip',
+          },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+    const lines = readLines(ndjsonPath);
+    expect(lines.at(-2)).toContain('"test-result"');
+    expect(lines.at(-1)).toContain('"test-attachments"');
+  });
+
+  it('cleans up the registry entry on every test end', () => {
+    const { testId, attempt } = setupTest();
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    expect(fs.existsSync(registryPath)).toBe(true);
+    const reporter = newReporter();
+    reporter.onTestEnd(fakeTestCase({ id: testId }), fakeResult());
+    expect(fs.existsSync(registryPath)).toBe(false);
   });
 });
 

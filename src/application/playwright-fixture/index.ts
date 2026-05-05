@@ -243,16 +243,15 @@ export const test = base.extend<TraceFixtures>({
           status: testInfo.status ?? 'passed',
         });
 
-        // Clean teardown: drop the registry entry so the reporter
-        // does NOT rescue this test. The entry only survives when
-        // we never reach this line — i.e. the worker died before
-        // running `finally`. Best-effort: a failed unlink shouldn't
-        // mask the real test result.
-        try {
-          fs.unlinkSync(registryPath);
-        } catch {
-          /* entry may not exist; ignore */
-        }
+        // Registry cleanup is owned by `HealTracerReporter` since
+        // it now runs on clean teardowns too — Playwright populates
+        // `result.attachments` only after our fixture's afterEach
+        // returns, so the reporter is the first hook with a final
+        // attachment list and it appends a `test-attachments` record
+        // before deleting the registry. Users who don't register
+        // the reporter will accumulate registry entries under
+        // `<projectOutputDir>/.heal-pending/` — documented as the
+        // cost of opting out.
       }
     },
     { auto: true },

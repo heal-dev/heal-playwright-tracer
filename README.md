@@ -87,14 +87,24 @@ declare module '@playwright/test' {
 Per-test output lands at
 `test-results/<test>/heal-data/heal-traces.ndjson`.
 
-### Optional: capture worker crashes
+### Recommended: register the reporter
 
-When a Playwright worker dies before the fixture can finalize its
-trace (OOM, SIGKILL, segfault, `process.exit()`), the per-test
-NDJSON is left without its `test-result` terminator. Register the
-reporter to have the Playwright main process append a synthesized
-`test-result` carrying the classified crash cause (e.g.
-`OutOfMemoryError`, `WorkerCrash`):
+The `HealTracerReporter` runs in the Playwright main process and
+covers two things the in-worker fixture can't:
+
+1. **Crash rescue.** When a worker dies before the fixture can
+   finalize its trace (OOM, SIGKILL, segfault, `process.exit()`),
+   the per-test NDJSON is left without its `test-result`
+   terminator. The reporter appends a synthesized `test-result`
+   carrying the classified crash cause (e.g. `OutOfMemoryError`,
+   `WorkerCrash`).
+2. **Playwright artefacts.** Playwright populates
+   `testInfo.attachments` (trace.zip, video, failure screenshots,
+   user `testInfo.attach()` files) **after** our fixture's
+   `afterEach` returns. The reporter is the first hook with the
+   final attachment list, so it appends a `test-attachments`
+   record to the NDJSON. This is what powers the `Trace` button
+   and video pane in `heal-tracer view`.
 
 ```ts
 // playwright.config.ts
@@ -104,14 +114,29 @@ export default defineConfig({
 });
 ```
 
-Fully optional and idempotent: on the common case where the fixture
-finalizes cleanly, the reporter is a no-op.
+The reporter is idempotent. If you don't register it, traces still
+work — but you won't get crash-rescued NDJSONs, and `heal-tracer
+view` won't surface `trace.zip` or videos in the UI.
 
 ## Usage
 
 1. After installing Heal, run your tests with the usual `npx playwright test` command.
 2. You should see `heal-traces.ndjson`.
 3. You can ask Claude or another agent to use those to understand your test results.
+
+## Viewing traces
+
+A small CLI ships alongside the tracer so humans can browse the
+captured traces in a local browser without setting up a Heal account:
+
+```sh
+npx heal-tracer view
+```
+
+The CLI starts a local HTTP server on port 3000, scans the current
+working directory recursively for `heal-data/` trace dirs, vendors a
+static SPA for browsing the per-statement timeline, screenshots, and
+verdict, then opens it in your default browser. Press Ctrl+C to stop.
 
 ### Claude Skill
 

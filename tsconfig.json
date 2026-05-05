@@ -19,9 +19,12 @@
   "include": [
     "src/index.ts",
     "src/application/babel-playwright-tracer-plugin/index.ts",
+    "src/application/commander-cli-adapter/**/*.ts",
+    "src/bin/**/*.ts",
     "src/domain/trace-event-recorder/service/entrypoint.ts",
     "src/domain/trace-event-recorder/model/statement-trace-schema.ts",
-    "src/domain/trace-event-recorder/port/heal-trace-exporter.ts"
+    "src/domain/trace-event-recorder/port/heal-trace-exporter.ts",
+    "src/infrastructure/local-viewer-adapter/**/*.ts"
   ],
   "exclude": ["node_modules", "dist"]
 }
