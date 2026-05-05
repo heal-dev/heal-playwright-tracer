@@ -34,7 +34,11 @@ export const HEAL_TRACE_SCHEMA_VERSION = 1;
 /**
  * One line of a `heal-traces.ndjson` file. Discriminated by `kind`.
  */
-export type HealTraceRecord = TestHeaderRecord | StatementRecord | TestResultRecord;
+export type HealTraceRecord =
+  | TestHeaderRecord
+  | StatementRecord
+  | TestResultRecord
+  | TestAttachmentsRecord;
 
 export interface TestHeaderRecord {
   kind: 'test-header';
@@ -92,6 +96,15 @@ export interface TestContext {
    * line numbers required.
    */
   testCaseId?: number;
+  /**
+   * Per-process execution id. Sourced from `HEAL_EXECUTION_ID` when
+   * set (so multi-shard CI shares one id), else a per-process
+   * `randomUUID()`. Used to scope on-disk artefacts under
+   * `<rootDir>/heal-traces/<executionId>/...` and to group
+   * historical runs in the local viewer. Optional for backwards
+   * compatibility with traces produced before this field existed.
+   */
+  executionId?: string;
 }
 
 export interface TestEnv {
@@ -195,6 +208,45 @@ export interface TestResultRecord {
    * normal teardown.
    */
   error?: StatementError;
+}
+
+/**
+ * Optional record appended AFTER `test-result` by the
+ * `HealTracerReporter` (Playwright Reporter API). Carries the list
+ * of files Playwright produced for the test — `trace.zip`, video,
+ * Playwright-taken failure screenshots, and any user attachments
+ * pushed via `testInfo.attach()`.
+ *
+ * Written from the reporter (not the fixture) because Playwright
+ * populates `testInfo.attachments` AFTER our `_traceAuto` fixture's
+ * teardown — the reporter's `onTestEnd` is the first hook where
+ * `result.attachments` is final.
+ *
+ * Absent when the reporter is not registered. Absence is not an
+ * error — the trace is still complete; downstream tools should
+ * treat the attachment list as empty.
+ */
+export interface TestAttachmentsRecord {
+  kind: 'test-attachments';
+  attachments: TestAttachment[];
+}
+
+export interface TestAttachment {
+  /**
+   * Playwright's attachment name. Common values: `'trace'` (for
+   * trace.zip), `'video'`, `'screenshot'`. User attachments use the
+   * label passed to `testInfo.attach(name, …)`.
+   */
+  name: string;
+  /**
+   * Path to the attachment file, RELATIVE to the test's outputDir
+   * (the parent of `heal-data/`). Forward slashes on every platform.
+   * Attachments outside the outputDir (rare; users could attach an
+   * arbitrary path via `testInfo.attach({ path })`) are dropped.
+   */
+  path: string;
+  /** MIME type (e.g. `'application/zip'`, `'image/png'`, `'video/webm'`). */
+  contentType: string;
 }
 
 /**

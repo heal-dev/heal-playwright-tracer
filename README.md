@@ -85,16 +85,35 @@ declare module '@playwright/test' {
 ```
 
 Per-test output lands at
-`test-results/<test>/heal-data/heal-traces.ndjson`.
+`heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`.
+See [Output layout](#output-layout) below for the full tree.
 
-### Optional: capture worker crashes
+### Register the reporter
 
-When a Playwright worker dies before the fixture can finalize its
-trace (OOM, SIGKILL, segfault, `process.exit()`), the per-test
-NDJSON is left without its `test-result` terminator. Register the
-reporter to have the Playwright main process append a synthesized
-`test-result` carrying the classified crash cause (e.g.
-`OutOfMemoryError`, `WorkerCrash`):
+The `HealTracerReporter` is **required** when the Babel plugin is
+wired. It runs in the Playwright main process and handles three
+things in-worker code can't:
+
+1. **Crash rescue.** When a worker dies before the fixture can
+   finalize its trace (OOM, SIGKILL, segfault, `process.exit()`),
+   the per-test NDJSON is left without its `test-result`
+   terminator. The reporter appends a synthesized `test-result`
+   carrying the classified crash cause (e.g. `OutOfMemoryError`,
+   `WorkerCrash`).
+2. **Playwright artefacts.** Playwright populates
+   `testInfo.attachments` (trace.zip, video, failure screenshots,
+   user `testInfo.attach()` files) **after** our fixture's
+   `afterEach` returns. The reporter is the first hook with the
+   final attachment list, so it copies each artefact from
+   Playwright's outputDir into the persistent
+   `heal-traces/<executionId>/<playwrightTestId>/<attempt>/` tree
+   and appends a `test-attachments` record to the NDJSON. This is
+   what powers the `Trace` button and video pane in
+   `heal-tracer view`.
+3. **Execution history.** The reporter writes
+   `heal-traces/<executionId>/execution.json` and appends one
+   `ExecutionRecord` line to `heal-traces/executions.ndjson`,
+   producing the run index the viewer's execution selector reads.
 
 ```ts
 // playwright.config.ts
@@ -104,14 +123,65 @@ export default defineConfig({
 });
 ```
 
-Fully optional and idempotent: on the common case where the fixture
-finalizes cleanly, the reporter is a no-op.
+If you wire the Babel plugin without registering the reporter, the
+fixture fails fast on the first test of every worker with a
+diagnostic pointing back here. The reporter is idempotent — wiring
+it more than once is safe.
+
+## Output layout
+
+Every run produces a self-contained execution dir under
+`heal-traces/`:
+
+```
+<cwd>/heal-traces/
+├── executions.ndjson                                   # append-only run index
+└── <executionId>/                                      # auto-generated uuidv4 per run
+    ├── execution.json                                  # per-run manifest
+    └── <playwrightTestId>/                             # Playwright testInfo.testId
+        └── <attempt>/                                  # 1-indexed
+            ├── heal-traces.ndjson
+            ├── trace.zip                               # if Playwright recorded one
+            ├── screenshots/
+            │   └── stmt-0001.png
+            └── videos/
+                └── video.webm
+```
+
+Keys are shaped `{executionId}/{testId}/{attempt}/...` so the layout
+maps cleanly onto any object-store key prefix if you ship traces
+elsewhere later.
+
+History is **append-only** — runs accumulate, nothing is pruned.
+Clean up manually with `rm -rf heal-traces/<id>/` when needed.
+
+> **Note:** add `heal-traces/` to your `.gitignore` — these are local
+> build artefacts and should never be committed.
+
+`<executionId>` is a uuidv4 the reporter generates at the start of
+each run; the trace viewer uses it to scope and group artefacts per
+run.
 
 ## Usage
 
 1. After installing Heal, run your tests with the usual `npx playwright test` command.
 2. You should see `heal-traces.ndjson`.
 3. You can ask Claude or another agent to use those to understand your test results.
+
+## Viewing traces
+
+A small CLI ships alongside the tracer so humans can browse the
+captured traces in a local browser without setting up a Heal account:
+
+```sh
+npx heal-tracer view
+```
+
+The CLI starts a local HTTP server on a free OS-assigned port,
+reads `<cwd>/heal-traces/`, lists every recorded execution in the
+header dropdown (newest first), and opens the latest one in your
+default browser. Switch executions from the dropdown to inspect
+history. Press Ctrl+C to stop.
 
 ### Claude Skill
 

@@ -37,27 +37,35 @@
 //      worker's stderr buffer and `TestResult.errors`, then appends
 //      a synthetic `test-result` line with the classified error.
 //   4. If an `onRescue` hook is configured, invokes it (fire-and-
-//      forget) so extension code — e.g. the sidecar's live
-//      collector leg — can observe the rescued record.
+//      forget) so extension code can observe the rescued record.
 //
 // Registration (user-facing, in `playwright.config.ts`):
 //
 //   reporter: [['@heal-dev/heal-playwright-tracer/reporter']]
 //
-// The reporter is pure-optional: when the fixture's own teardown
-// runs to completion (by far the common case), the registry entry
-// is deleted and the reporter is a no-op. Users who don't register
-// it simply don't get the crash rescue; the registry file for a
-// crashed test stays on disk indefinitely, which is fine — the
-// per-test output dir is transient anyway.
+// Registration is mandatory whenever the Babel plugin is wired —
+// the fixture asserts on the `HEAL_TRACER_REPORTER` env var (set
+// here in `onBegin`) and fails fast if it's missing.
 
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import type { FullConfig, Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import type {
-  TestResultRecord,
   StatementError,
+  TestAttachment,
+  TestAttachmentsRecord,
+  TestResultRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
+import {
+  EXECUTION_RECORD_KIND,
+  type ExecutionManifest,
+  type ExecutionRecord,
+  type ExecutionTestEntry,
+  type ExecutionTotals,
+  type TestStatus,
+} from '../../domain/persistence';
+import { HealTracesLayout, getExecutionIdSource, resolveExecutionId } from '../heal-traces-layout';
 import { CrashErrorClassifier } from './crash-error-classifier';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
 
@@ -75,15 +83,27 @@ export const HEAL_PENDING_SUBDIR = '.heal-pending';
 export interface HealTraceContext {
   /** Absolute path to the per-test `heal-traces.ndjson`. */
   ndjsonPath: string;
-  /** Absolute `testInfo.outputDir` — the root of the per-test artifact dir. */
+  /**
+   * Absolute path to the per-(test, attempt) directory inside the
+   * persistent `heal-traces/` tree — the destination root the reporter
+   * copies Playwright artefacts into. Reporter-emitted
+   * `test-attachments` paths are relative to this directory.
+   */
   rootDir: string;
+  /**
+   * Absolute `testInfo.outputDir` — the source directory Playwright
+   * writes its own attachments into (`trace.zip`, `video.webm`,
+   * failure screenshots, user `testInfo.attach()` files).
+   */
+  playwrightOutputDir: string;
+  /** Per-process executionId at the time the fixture wrote the entry. */
+  executionId: string;
 }
 
 /**
  * Context handed to the `onRescue` hook. Extends `HealTraceContext`
  * with the per-test correlation fields the hook needs to route the
- * synthetic record (matches the transport envelope used by the
- * sidecar's live collector path).
+ * synthetic record.
  */
 export interface RescueContext extends HealTraceContext {
   /** Playwright `TestCase.id` — stable hash of (file, title, project). */
@@ -98,9 +118,8 @@ export interface RescueContext extends HealTraceContext {
  * Invoked after the reporter has appended its synthetic
  * `test-result` to the NDJSON. Intended for extensions that need to
  * forward the rescued record to a live destination the in-worker
- * exporters never got to reach (e.g. the sidecar's collector HTTP
- * path, which runs per-test inside the worker and therefore dies
- * with it).
+ * exporters never got to reach — anything running per-test inside
+ * the worker dies with it on a crash.
  *
  * Errors are caught by the reporter and logged to `process.stderr`;
  * a failing hook never breaks the Playwright run or prevents the
@@ -137,6 +156,17 @@ export class HealTracerReporter implements Reporter {
   private readonly stderrByWorker = new Map<number, string[]>();
   private projectOutputDirs: string[] = [];
 
+  // Execution history (P2) — reporter is the only writer of
+  // executions.ndjson + execution.json. Resolved at onBegin so the
+  // executionId propagates to workers via HEAL_EXECUTION_ID.
+  private executionId = '';
+  private executionSource: 'env' | 'generated' = 'generated';
+  private startedAt = 0;
+  private rootDir = '';
+  private playwrightVersion: string | undefined;
+  private gitInfo: ExecutionRecord['git'];
+  private readonly testEntries: ExecutionTestEntry[] = [];
+
   constructor(deps: HealTracerReporterDeps = {}) {
     this.classifier = deps.classifier ?? new CrashErrorClassifier();
     this.inspector = deps.inspector ?? new NdjsonTailInspector();
@@ -160,6 +190,28 @@ export class HealTracerReporter implements Reporter {
         this.projectOutputDirs.push(project.outputDir);
       }
     }
+
+    // Resolve executionId once in main BEFORE workers spawn, then
+    // propagate via env so worker fixtures see the same value.
+    // Workers' resolver reports `source='env'` after this — that's
+    // expected; the truthful source we record on the run is OURS,
+    // captured here before we mutate the env var.
+    this.executionSource = getExecutionIdSource();
+    this.executionId = resolveExecutionId();
+    if (this.executionSource === 'generated') {
+      process.env.HEAL_EXECUTION_ID = this.executionId;
+    }
+
+    // Worker fixtures assert on this env var to detect when a user has
+    // wired the Babel plugin but forgotten to register the reporter.
+    // Setting it here (before workers spawn) is the handshake; the
+    // fixture's check is the enforcement.
+    process.env.HEAL_TRACER_REPORTER = '1';
+
+    this.startedAt = Date.now();
+    this.rootDir = process.cwd();
+    this.playwrightVersion = readPlaywrightVersion();
+    this.gitInfo = readGitInfo();
   }
 
   onTestBegin(_test: TestCase, result: TestResult): void {
@@ -175,28 +227,58 @@ export class HealTracerReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
+    this.captureTestEntry(test, result);
     const traceCtx = this.resolveTraceContext(test, result);
     if (!traceCtx) return;
-    if (!fs.existsSync(traceCtx.ndjsonPath)) return;
-    if (this.inspector.endsWithTestResult(traceCtx.ndjsonPath)) return;
-
-    const stderr = (this.stderrByWorker.get(result.workerIndex) ?? []).join('');
-    const error = this.classifier.classify(result.errors, stderr);
-    const record = this.buildSyntheticTestResult(result, stderr, error);
-
-    try {
-      this.appendFile(traceCtx.ndjsonPath, JSON.stringify(record) + '\n');
-    } catch (err) {
-      // Never crash the Playwright run because of a rescue write.
-      // Surface the failure on stderr so it shows up in CI logs;
-      // the original test failure is what the user cares about.
-      process.stderr.write(
-        `[heal-playwright-tracer/reporter] failed to append synthetic test-result to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
-      );
+    if (!fs.existsSync(traceCtx.ndjsonPath)) {
+      this.cleanupRegistry(test, result);
       return;
     }
 
-    this.invokeRescueHook(record, traceCtx, test, result);
+    let rescuedRecord: TestResultRecord | null = null;
+
+    // Rescue path: file is missing the `test-result` terminator.
+    // Synthesize one from the worker's stderr buffer + Playwright's
+    // post-mortem `result.errors`.
+    if (!this.inspector.endsWithTestResult(traceCtx.ndjsonPath)) {
+      const stderr = (this.stderrByWorker.get(result.workerIndex) ?? []).join('');
+      const error = this.classifier.classify(result.errors, stderr);
+      rescuedRecord = this.buildSyntheticTestResult(result, stderr, error);
+
+      try {
+        this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
+      } catch (err) {
+        process.stderr.write(
+          `[heal-playwright-tracer/reporter] failed to append synthetic test-result to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
+        );
+        this.cleanupRegistry(test, result);
+        return;
+      }
+    }
+
+    // Always-on: copy each Playwright attachment from its outputDir
+    // location into the persistent heal-traces tree, then append a
+    // `test-attachments` record whose paths are relative to that
+    // tree. Keeps the file shape canonical (test-result then
+    // test-attachments) and makes the heal-traces dir the single
+    // source of truth — Playwright's `outputDir` can be wiped, the
+    // history survives.
+    const attachmentsRecord = this.copyAndBuildAttachmentsRecord(result, traceCtx);
+    try {
+      this.appendFile(traceCtx.ndjsonPath, JSON.stringify(attachmentsRecord) + '\n');
+    } catch (err) {
+      process.stderr.write(
+        `[heal-playwright-tracer/reporter] failed to append test-attachments to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
+      );
+      this.cleanupRegistry(test, result);
+      return;
+    }
+
+    this.cleanupRegistry(test, result);
+
+    if (rescuedRecord) {
+      this.invokeRescueHook(rescuedRecord, traceCtx, test, result);
+    }
   }
 
   // Probes each known project outputDir for the per-test registry
@@ -218,12 +300,107 @@ export class HealTracerReporter implements Reporter {
         const parsed = JSON.parse(body) as Partial<HealTraceContext>;
         if (typeof parsed.ndjsonPath !== 'string' || parsed.ndjsonPath.length === 0) continue;
         if (typeof parsed.rootDir !== 'string' || parsed.rootDir.length === 0) continue;
-        return { ndjsonPath: parsed.ndjsonPath, rootDir: parsed.rootDir };
+        if (
+          typeof parsed.playwrightOutputDir !== 'string' ||
+          parsed.playwrightOutputDir.length === 0
+        ) {
+          continue;
+        }
+        if (typeof parsed.executionId !== 'string' || parsed.executionId.length === 0) {
+          continue;
+        }
+        return {
+          ndjsonPath: parsed.ndjsonPath,
+          rootDir: parsed.rootDir,
+          playwrightOutputDir: parsed.playwrightOutputDir,
+          executionId: parsed.executionId,
+        };
       } catch {
         continue;
       }
     }
     return null;
+  }
+
+  /**
+   * Copy each Playwright attachment from its `outputDir` location
+   * into the persistent heal-traces tree (under `traceCtx.rootDir`),
+   * mapping by `name` / `contentType`:
+   *
+   *   - 'trace'                     → <rootDir>/trace.zip
+   *   - contentType: 'video/...'    → <rootDir>/videos/<basename>
+   *   - other (screenshot, user)    → <rootDir>/<rel-from-outputDir>
+   *
+   * Returns a `test-attachments` record whose `path` fields are the
+   * destination-relative locations using forward slashes, so the
+   * local-viewer-server can serve them via `/api/asset/...`.
+   *
+   * Attachments whose source path falls outside Playwright's
+   * outputDir are dropped — those would not be safely servable.
+   */
+  private copyAndBuildAttachmentsRecord(
+    result: TestResult,
+    traceCtx: HealTraceContext,
+  ): TestAttachmentsRecord {
+    const srcRoot = path.resolve(traceCtx.playwrightOutputDir);
+    const dstRoot = path.resolve(traceCtx.rootDir);
+    const attachments: TestAttachment[] = [];
+
+    for (const att of result.attachments ?? []) {
+      if (!att.path) continue;
+      const srcResolved = path.resolve(att.path);
+      const relFromSrc = path.relative(srcRoot, srcResolved);
+      if (relFromSrc.length === 0 || relFromSrc.startsWith('..') || path.isAbsolute(relFromSrc)) {
+        continue;
+      }
+
+      const dstRel = this.placeAttachment(att.name, att.contentType, relFromSrc);
+      const dstAbs = path.resolve(dstRoot, dstRel);
+
+      try {
+        fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
+        fs.copyFileSync(srcResolved, dstAbs);
+      } catch (err) {
+        process.stderr.write(
+          `[heal-playwright-tracer/reporter] failed to copy attachment ${att.name} (${srcResolved} → ${dstAbs}): ${String(err)}\n`,
+        );
+        continue;
+      }
+
+      // Forward slashes on all platforms — the local viewer maps
+      // these into URLs and Windows paths break URL routing.
+      const rel = dstRel.split(path.sep).join('/');
+      attachments.push({
+        name: att.name,
+        path: rel,
+        contentType: att.contentType,
+      });
+    }
+
+    return { kind: 'test-attachments', attachments };
+  }
+
+  private placeAttachment(name: string, contentType: string, relFromSrc: string): string {
+    if (name === 'trace') {
+      return 'trace.zip';
+    }
+    if (contentType.toLowerCase().startsWith('video/')) {
+      return path.join('videos', path.basename(relFromSrc));
+    }
+
+    return relFromSrc;
+  }
+
+  private cleanupRegistry(test: TestCase, result: TestResult): void {
+    const attempt = result.retry + 1;
+    for (const outputDir of this.projectOutputDirs) {
+      const entryPath = healPendingRegistryPath(outputDir, test.id, attempt);
+      try {
+        fs.unlinkSync(entryPath);
+      } catch {
+        /* entry may not exist; ignore */
+      }
+    }
   }
 
   private buildSyntheticTestResult(
@@ -251,6 +428,8 @@ export class HealTracerReporter implements Reporter {
     const rescueCtx: RescueContext = {
       ndjsonPath: traceCtx.ndjsonPath,
       rootDir: traceCtx.rootDir,
+      playwrightOutputDir: traceCtx.playwrightOutputDir,
+      executionId: traceCtx.executionId,
       testId: test.id,
       attempt: result.retry + 1,
       workerIndex: result.workerIndex,
@@ -266,5 +445,146 @@ export class HealTracerReporter implements Reporter {
           `[heal-playwright-tracer/reporter] onRescue hook failed: ${String(err)}\n`,
         );
       });
+  }
+
+  private captureTestEntry(test: TestCase, result: TestResult): void {
+    const titlePath =
+      typeof (test as unknown as { titlePath?: () => string[] }).titlePath === 'function'
+        ? (test as unknown as { titlePath: () => string[] }).titlePath()
+        : [];
+    const file = (test as unknown as { location?: { file?: string } }).location?.file ?? '';
+    const project =
+      (test as unknown as { parent?: { project?: () => { name?: string } } }).parent?.project?.()
+        ?.name ?? '';
+
+    this.testEntries.push({
+      playwrightTestId: test.id,
+      title: test.title,
+      titlePath,
+      file,
+      project,
+      attempt: result.retry + 1,
+      status: this.mapTestStatus(result.status),
+      durationMs: result.duration,
+      startedAt: result.startTime instanceof Date ? result.startTime.getTime() : Date.now(),
+    });
+  }
+
+  private mapTestStatus(s: TestResult['status']): TestStatus {
+    switch (s) {
+      case 'passed':
+      case 'failed':
+      case 'timedOut':
+      case 'skipped':
+      case 'interrupted':
+        return s;
+      default:
+        return 'unknown';
+    }
+  }
+
+  onEnd(): void {
+    if (this.executionId.length === 0) return;
+
+    const layout = new HealTracesLayout(this.rootDir, this.executionId);
+    const endedAt = Date.now();
+    const totals = computeTotals(this.testEntries);
+
+    const manifest: ExecutionManifest = {
+      executionId: this.executionId,
+      source: this.executionSource,
+      startedAt: this.startedAt,
+      endedAt,
+      durationMs: endedAt - this.startedAt,
+      ...(this.gitInfo ? { git: this.gitInfo } : {}),
+      ...(this.playwrightVersion ? { playwrightVersion: this.playwrightVersion } : {}),
+      totals,
+      tests: this.testEntries,
+    };
+
+    const record: ExecutionRecord = {
+      kind: EXECUTION_RECORD_KIND,
+      executionId: this.executionId,
+      source: this.executionSource,
+      startedAt: this.startedAt,
+      endedAt,
+      durationMs: endedAt - this.startedAt,
+      ...(this.gitInfo ? { git: this.gitInfo } : {}),
+      ...(this.playwrightVersion ? { playwrightVersion: this.playwrightVersion } : {}),
+      totals,
+    };
+
+    try {
+      fs.mkdirSync(layout.executionDir(), { recursive: true });
+      fs.writeFileSync(layout.executionManifestPath(), JSON.stringify(manifest, null, 2), 'utf8');
+    } catch (err) {
+      process.stderr.write(
+        `[heal-playwright-tracer/reporter] failed to write execution.json: ${String(err)}\n`,
+      );
+    }
+
+    try {
+      fs.mkdirSync(layout.healTracesRoot(), { recursive: true });
+      this.appendFile(layout.executionsNdjsonPath(), JSON.stringify(record) + '\n');
+    } catch (err) {
+      process.stderr.write(
+        `[heal-playwright-tracer/reporter] failed to append executions.ndjson: ${String(err)}\n`,
+      );
+    }
+  }
+}
+
+function computeTotals(entries: ExecutionTestEntry[]): ExecutionTotals {
+  const totals: ExecutionTotals = {
+    tests: entries.length,
+    passed: 0,
+    failed: 0,
+    timedOut: 0,
+    skipped: 0,
+    interrupted: 0,
+  };
+  for (const e of entries) {
+    if (e.status === 'passed') totals.passed += 1;
+    else if (e.status === 'failed') totals.failed += 1;
+    else if (e.status === 'timedOut') totals.timedOut += 1;
+    else if (e.status === 'skipped') totals.skipped += 1;
+    else if (e.status === 'interrupted') totals.interrupted += 1;
+    // 'unknown' counts toward `tests` but not any per-status bucket.
+  }
+  return totals;
+}
+
+function readPlaywrightVersion(): string | undefined {
+  try {
+    const pkg = require('@playwright/test/package.json') as { version?: string };
+    return typeof pkg.version === 'string' ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readGitInfo(): ExecutionRecord['git'] {
+  const sha = tryGit('rev-parse HEAD');
+  const branch = tryGit('rev-parse --abbrev-ref HEAD');
+  const dirty = tryGit('status --porcelain');
+  if (sha === undefined && branch === undefined && dirty === undefined) {
+    return undefined;
+  }
+  const info: NonNullable<ExecutionRecord['git']> = {};
+  if (sha !== undefined) info.sha = sha;
+  if (branch !== undefined && branch !== 'HEAD') info.branch = branch;
+  if (dirty !== undefined) info.dirty = dirty.length > 0;
+  return info;
+}
+
+function tryGit(args: string): string | undefined {
+  try {
+    return execSync(`git ${args}`, {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+  } catch {
+    return undefined;
   }
 }

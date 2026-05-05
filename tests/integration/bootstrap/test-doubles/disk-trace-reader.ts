@@ -5,7 +5,7 @@
  */
 
 // Disk reader — reads completed traces by walking the sandbox's
-// `test-results/` tree for `heal-traces.ndjson` files.
+// `heal-traces/` tree for `heal-traces.ndjson` files.
 //
 // This proves the always-on default exporter (NDJSON, written via
 // `NdjsonExporter` in the composition root) works end-to-end. One
@@ -30,8 +30,8 @@ function walkFiles(dir: string): string[] {
 export class DiskTraceReader {
   collect(sandboxRoot: string): Map<string, ParsedTrace> {
     const traces = new Map<string, ParsedTrace>();
-    const testResultsDir = path.join(sandboxRoot, 'test-results');
-    for (const file of walkFiles(testResultsDir)) {
+    const healTracesDir = path.join(sandboxRoot, 'heal-traces');
+    for (const file of walkFiles(healTracesDir)) {
       if (!file.endsWith('heal-traces.ndjson')) continue;
       const records = parseNdjson(file);
       const parsed = assembleTrace(records);

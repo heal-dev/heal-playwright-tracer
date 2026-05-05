@@ -29,10 +29,14 @@
 //                   lifecycle teardowns so SDKs still see any globals
 //                   a lifecycle installed
 //
-// Output shape (per test): `heal-data/heal-traces.ndjson` — one
-// HealTraceRecord per line. See
+// Output shape (per (test, attempt)):
+//   <cwd>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson
+// The fixture writes the ndjson + per-statement screenshots there;
+// the reporter additionally copies Playwright artefacts (trace.zip,
+// videos, failure screenshots, user attachments) into the same dir
+// on `onTestEnd`. See
 // `../../domain/trace-event-recorder/model/statement-trace-schema.ts`
-// for the contract.
+// for the record contract.
 //
 // Any backend integration (HTTP shipping, APM bindings,
 // telemetry-session setup, …) lives in user code and plugs in via
@@ -61,7 +65,7 @@ import { PlaywrightStepTrackingAdapter } from '../../infrastructure/playwright-s
 import { PlaywrightTestContextAdapter } from '../../infrastructure/playwright-test-context-adapter';
 import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-locator-screenshot-adapter';
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
-import { HealDataLayout } from '../../infrastructure/heal-data-layout';
+import { HealTracesLayout, resolveExecutionId } from '../../infrastructure/heal-traces-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
 import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
 
@@ -75,20 +79,16 @@ const expect = wrapExpect(
   rawExpect as unknown as (...args: unknown[]) => unknown,
 ) as typeof rawExpect;
 
-// All artifacts this package produces live under `HealDataLayout.SUBDIR`
-// of `testInfo.outputDir`, so they stay segregated from Playwright's
-// own output (screenshot/trace/video attachments). The layout class
-// owns the subdir name and ndjson filename.
+// All artefacts this package produces live under
+// `<cwd>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/`.
+// `HealTracesLayout` owns the directory shape and filenames.
 
 type TraceFixtures = {
   _traceAuto: void;
 };
 
-function buildHealTraceExporter(
-  layout: HealDataLayout,
-  ctx: HealTracerTestContext,
-): HealTraceExporter {
-  const legs: HealTraceExporter[] = [new NdjsonExporter(layout.ndjsonPath)];
+function buildHealTraceExporter(ndjsonPath: string, ctx: HealTracerTestContext): HealTraceExporter {
+  const legs: HealTraceExporter[] = [new NdjsonExporter(ndjsonPath)];
 
   const { exporters = [] } = getTracerConfig();
   for (const factory of exporters) {
@@ -103,16 +103,44 @@ function buildHealTraceExporter(
 }
 
 // Composition-root singletons — one per process.
-const testContextAdapter = new PlaywrightTestContextAdapter({ setContext });
+const testContextAdapter = new PlaywrightTestContextAdapter({ setContext }, { resolveExecutionId });
 const stepTrackingAdapter = new PlaywrightStepTrackingAdapter({ pushStep, popStep });
+
+// The Babel plugin and the reporter are a pair — the in-worker fixture
+// produces NDJSON; the reporter (main process) propagates the
+// executionId, finalizes crashed traces, and copies Playwright
+// artefacts. Running the plugin without the reporter silently produces
+// half-broken output, so we hard-fail the first test in each worker.
+// Reporter sets HEAL_TRACER_REPORTER=1 in onBegin; Playwright
+// propagates env to workers.
+let reporterCheckPassed = false;
+function assertReporterRegistered(): void {
+  if (reporterCheckPassed) return;
+  if (process.env.HEAL_TRACER_REPORTER !== '1') {
+    throw new Error(
+      '@heal-dev/heal-playwright-tracer: Babel plugin is wired but the ' +
+        'reporter is not registered. Add to playwright.config.ts:\n' +
+        "  reporter: [['@heal-dev/heal-playwright-tracer/reporter']]\n" +
+        'See https://github.com/heal-dev/heal-playwright-tracer#register-the-reporter',
+    );
+  }
+  reporterCheckPassed = true;
+}
 
 export const test = base.extend<TraceFixtures>({
   _traceAuto: [
     async ({ page }, use, testInfo) => {
+      assertReporterRegistered();
       const captured = testContextAdapter.capture(testInfo);
 
-      const layout = new HealDataLayout(testInfo.outputDir);
-      fs.mkdirSync(layout.healDataDir, { recursive: true });
+      const layout = new HealTracesLayout(process.cwd(), captured.executionId);
+      const testDir = layout.testDir(captured.testId, captured.attempt);
+      const ndjsonPath = layout.ndjsonPath(captured.testId, captured.attempt);
+      const screenshotsDir = path.dirname(
+        layout.screenshotPath(captured.testId, captured.attempt, 'x.png'),
+      );
+      fs.mkdirSync(testDir, { recursive: true });
+      fs.mkdirSync(screenshotsDir, { recursive: true });
 
       // Write a registry entry for the optional `HealTracerReporter`
       // so it can find this test's NDJSON from the main process.
@@ -124,27 +152,32 @@ export const test = base.extend<TraceFixtures>({
       // any subsequent abrupt exit. Cleaned up in the `finally`
       // block below on graceful teardown, so only crashed tests
       // leave an orphan for the reporter to pick up.
-      const attempt = testInfo.retry + 1;
       const registryPath = healPendingRegistryPath(
         testInfo.project.outputDir,
-        testInfo.testId,
-        attempt,
+        captured.testId,
+        captured.attempt,
       );
       fs.mkdirSync(path.dirname(registryPath), { recursive: true });
       fs.writeFileSync(
         registryPath,
-        JSON.stringify({ ndjsonPath: layout.ndjsonPath, rootDir: testInfo.outputDir }),
+        JSON.stringify({
+          ndjsonPath,
+          rootDir: testDir,
+          executionId: captured.executionId,
+          playwrightOutputDir: testInfo.outputDir,
+        }),
         'utf8',
       );
 
       const tracerCtx: HealTracerTestContext = {
         testInfo,
-        healDataDir: layout.healDataDir,
+        healDataDir: testDir,
         transport: {
           testId: captured.testId,
           attempt: captured.attempt,
-          rootDir: testInfo.outputDir,
-          healTracesFilePath: layout.ndjsonPath,
+          executionId: captured.executionId,
+          rootDir: testDir,
+          healTracesFilePath: ndjsonPath,
         },
       };
 
@@ -153,7 +186,7 @@ export const test = base.extend<TraceFixtures>({
       // projector, install on the recorder, then reset() — which
       // clears projector state and emits the test-header record via
       // the buildMetaEvent call inside the recorder.
-      const output = buildHealTraceExporter(layout, tracerCtx);
+      const output = buildHealTraceExporter(ndjsonPath, tracerCtx);
       const projector = new StatementProjector(output);
       setExporter(projector);
       reset();
@@ -164,7 +197,7 @@ export const test = base.extend<TraceFixtures>({
 
       const stopScreenshots = startLocatorScreenshotCapture(
         page,
-        layout.healDataDir,
+        screenshotsDir,
         setCurrentStatementScreenshot,
       );
       const stdoutSession = new StdoutCaptureSession();
@@ -238,21 +271,17 @@ export const test = base.extend<TraceFixtures>({
           pendingError,
         );
 
-        new ArtifactSummaryPrinter(layout).print({
+        new ArtifactSummaryPrinter(testDir).print({
           title: testInfo.title,
           status: testInfo.status ?? 'passed',
         });
 
-        // Clean teardown: drop the registry entry so the reporter
-        // does NOT rescue this test. The entry only survives when
-        // we never reach this line — i.e. the worker died before
-        // running `finally`. Best-effort: a failed unlink shouldn't
-        // mask the real test result.
-        try {
-          fs.unlinkSync(registryPath);
-        } catch {
-          /* entry may not exist; ignore */
-        }
+        // Registry cleanup is owned by `HealTracerReporter` — it
+        // runs on clean teardowns too because Playwright populates
+        // `result.attachments` only after this fixture's afterEach
+        // returns, so the reporter is the first hook with a final
+        // attachment list. It appends a `test-attachments` record
+        // and then deletes the registry entry.
       }
     },
     { auto: true },

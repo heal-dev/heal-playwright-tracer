@@ -35,7 +35,6 @@ beforeAll(async () => {
   const sandbox = new IntegrationSandbox({
     tarballPath,
     specSource: REPORTER_RESCUE_SPEC,
-    withHealReporter: true,
   });
   sandbox.scaffold();
   sandbox.install();

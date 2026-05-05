@@ -11,7 +11,7 @@ import { PlaywrightTestContextAdapter } from '../../../src/infrastructure/playwr
 const setContext = vi.fn();
 const hooks = { setContext };
 
-let adapter = new PlaywrightTestContextAdapter(hooks);
+let adapter = new PlaywrightTestContextAdapter(hooks, { resolveExecutionId: () => 'exec-test' });
 const captureTestContext = (info: TestInfo) => adapter.capture(info);
 
 function makeTestInfo(overrides: Partial<TestInfo> = {}): TestInfo {
@@ -32,7 +32,7 @@ function makeTestInfo(overrides: Partial<TestInfo> = {}): TestInfo {
 
 beforeEach(() => {
   setContext.mockReset();
-  adapter = new PlaywrightTestContextAdapter(hooks);
+  adapter = new PlaywrightTestContextAdapter(hooks, { resolveExecutionId: () => 'exec-test' });
 });
 
 describe('captureTestContext — correlation identifiers', () => {

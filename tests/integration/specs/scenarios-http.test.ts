@@ -65,9 +65,15 @@ describe('HealTracerTestContext.transport.healTracesFilePath', () => {
     for (const batch of batches) {
       expect(batch.healTracesFilePath, 'healTracesFilePath missing on context').toBeTruthy();
       expect(path.isAbsolute(batch.healTracesFilePath!)).toBe(true);
-      expect(batch.healTracesFilePath!.endsWith(path.join('heal-data', 'heal-traces.ndjson'))).toBe(
-        true,
-      );
+      // New layout: heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson
+      const segs = batch.healTracesFilePath!.split(path.sep);
+      const tracesIdx = segs.lastIndexOf('heal-traces');
+      expect(tracesIdx).toBeGreaterThanOrEqual(0);
+      // Expect 3 segments between "heal-traces" and the filename:
+      // <executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson
+      expect(segs.length - tracesIdx).toBe(5);
+      expect(segs[segs.length - 1]).toBe('heal-traces.ndjson');
+      expect(segs[segs.length - 2]).toMatch(/^\d+$/); // attempt is 1-indexed integer
     }
   });
 

@@ -267,6 +267,7 @@ function buildTestHeader(meta: MetaEvent): TestHeader {
     testId: meta.testId ?? '',
     attempt: meta.attempt ?? 1,
     ...(meta.testCaseId !== undefined ? { testCaseId: meta.testCaseId } : {}),
+    ...(meta.executionId !== undefined ? { executionId: meta.executionId } : {}),
   };
   return {
     title: meta.testTitle ?? '',

@@ -39,12 +39,12 @@ export interface SandboxOptions {
    */
   withStubExporter?: boolean;
   /**
-   * When true, register the tracer's optional crash-rescue reporter
-   * (`@heal-dev/heal-playwright-tracer/reporter`) alongside `line`.
-   * Needed for any scenario that intentionally crashes a worker or
-   * asserts on the reporter's no-op behavior during a clean run.
+   * When true, omit the heal reporter from the generated config — used
+   * by the negative-path test that asserts the fixture fails fast when
+   * the Babel plugin is wired without the reporter. All other tests
+   * leave this unset; the reporter is part of the default config.
    */
-  withHealReporter?: boolean;
+  withoutHealReporter?: boolean;
 }
 
 export class IntegrationSandbox {
@@ -120,6 +120,31 @@ export class IntegrationSandbox {
     });
   }
 
+  /**
+   * Variant of `runPlaywright` that captures stdout/stderr instead of
+   * inheriting the parent's. Used by the negative-path test that
+   * asserts on the diagnostic message printed when the reporter is
+   * missing. Tolerates any non-zero exit code — the caller decides
+   * whether failure was expected.
+   */
+  async runPlaywrightCapturing(
+    extraEnv: Record<string, string> = {},
+  ): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    const cwd = this.requireRoot();
+    return new Promise((resolve, reject) => {
+      const child = spawn('npx', ['playwright', 'test'], {
+        cwd,
+        env: { ...process.env, ...extraEnv },
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout?.on('data', (c) => (stdout += c.toString('utf8')));
+      child.stderr?.on('data', (c) => (stderr += c.toString('utf8')));
+      child.on('error', reject);
+      child.on('exit', (code) => resolve({ code, stdout, stderr }));
+    });
+  }
+
   /** Absolute path to the sandbox root. Throws if `scaffold()` hasn't run. */
   getRoot(): string {
     return this.requireRoot();
@@ -141,9 +166,9 @@ configureTracer({ exporters: [stubExporterFactory] });
       : `import { defineConfig } from '@playwright/test';
 `;
 
-    const reporter = this.opts.withHealReporter
-      ? `[['line'], ['@heal-dev/heal-playwright-tracer/reporter']]`
-      : `'line'`;
+    const reporter = this.opts.withoutHealReporter
+      ? `'line'`
+      : `[['line'], ['@heal-dev/heal-playwright-tracer/reporter']]`;
 
     return `${head}
 export default defineConfig({

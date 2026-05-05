@@ -31,6 +31,7 @@ import { HEAL_TAG_PREFIX } from './heal-tag-prefix';
 export interface CapturedContext {
   testId: string;
   attempt: number;
+  executionId: string;
   testCaseId?: number;
 }
 
@@ -38,8 +39,15 @@ export interface TestContextHooks {
   setContext(ctx: Record<string, unknown> | null): void;
 }
 
+export interface PlaywrightTestContextAdapterOptions {
+  resolveExecutionId(): string;
+}
+
 export class PlaywrightTestContextAdapter {
-  constructor(private readonly hooks: TestContextHooks) {}
+  constructor(
+    private readonly hooks: TestContextHooks,
+    private readonly options: PlaywrightTestContextAdapterOptions,
+  ) {}
 
   capture(testInfo: TestInfo): CapturedContext {
     const attempt = testInfo.retry + 1;
@@ -53,6 +61,8 @@ export class PlaywrightTestContextAdapter {
       ? Number.parseInt(rawTagSuffix, 10)
       : undefined;
 
+    const executionId = this.options.resolveExecutionId();
+
     this.hooks.setContext({
       workerIndex: testInfo.workerIndex,
       parallelIndex: testInfo.parallelIndex,
@@ -63,12 +73,14 @@ export class PlaywrightTestContextAdapter {
       testFile: testInfo.file,
       retry: testInfo.retry,
       attempt,
+      executionId,
       ...(testCaseId ? { testCaseId } : {}),
     });
 
     return {
       testId: testInfo.testId,
       attempt,
+      executionId,
       ...(testCaseId ? { testCaseId } : {}),
     };
   }
