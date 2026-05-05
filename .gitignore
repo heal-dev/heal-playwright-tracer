@@ -7,3 +7,5 @@ dist/
 heal-playwright-tracer-*.tgz
 heal-dev-heal-playwright-tracer-*.tgz
 coverage/
+heal-traces/
+test-results/

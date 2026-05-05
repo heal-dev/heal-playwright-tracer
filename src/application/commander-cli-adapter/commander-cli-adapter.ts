@@ -17,7 +17,12 @@ import { Command } from 'commander';
 
 import { LocalViewerServer } from '../../infrastructure/local-viewer-adapter/local-viewer-server';
 
-const DEFAULT_PORT = 3000;
+// Bind to port 0 — the OS picks a free ephemeral port. We then read
+// the actual port back from the listening server's AddressInfo and
+// use that for the printed URL and the browser-open. Avoids "port in
+// use" failures when several copies of `heal-tracer view` overlap or
+// when port 3000 is already taken by another dev server.
+const RANDOM_PORT = 0;
 
 export interface CommanderCliAdapterOptions {
   /** Override default `process.argv` parser. Used by tests. */
@@ -89,12 +94,17 @@ export class CommanderCliAdapter {
     const server = new LocalViewerServer({
       rootDir,
       bundleDir,
-      port: DEFAULT_PORT,
+      port: RANDOM_PORT,
       log: (m) => this.log(m),
     });
 
     await server.start();
-    const url = `http://localhost:${String(DEFAULT_PORT)}`;
+    const port = server.boundPort();
+    if (port === null) {
+      console.error('[heal-tracer] server failed to bind a port');
+      process.exit(1);
+    }
+    const url = `http://localhost:${String(port)}`;
     this.log(`✓ heal-tracer viewer running at ${url}`);
     this.log(`  scanning: ${rootDir} (recursive)`);
 

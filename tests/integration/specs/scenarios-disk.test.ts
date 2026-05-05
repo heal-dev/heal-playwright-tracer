@@ -7,7 +7,7 @@
 // Disk-route integration test.
 //
 // Runs the six scenarios in a fresh sandbox, then collects traces by
-// walking `${sandbox}/test-results/**/heal-traces.ndjson` — proving
+// walking `${sandbox}/heal-traces/**/heal-traces.ndjson` — proving
 // the always-on `NdjsonExporter` works end-to-end.
 
 import { beforeAll } from 'vitest';

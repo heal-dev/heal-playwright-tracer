@@ -61,6 +61,7 @@ export interface MetaEvent extends TraceEventBase {
   // Correlation identifiers (per-test).
   attempt?: number;
   testCaseId?: number;
+  executionId?: string;
   // Forward-compatible escape hatch.
   [key: string]: unknown;
 }

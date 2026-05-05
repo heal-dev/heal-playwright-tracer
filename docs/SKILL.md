@@ -9,11 +9,18 @@ Turn `heal-traces.ndjson` into a concise root-cause report with statement-level 
 
 ## Inputs To Locate
 
-- `test-results/<test>/heal-data/heal-traces.ndjson`
-- Related Playwright output (`stdout`, `stderr`, screenshots, stack trace)
+- `heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`
+- Sibling artefacts in the same `<attempt>/` dir: `trace.zip`,
+  `screenshots/stmt-*.png`, `videos/<file>.webm` (when present)
+- `heal-traces/executions.ndjson` — append-only run index; the latest
+  line is the most recent run
+- `heal-traces/<executionId>/execution.json` — per-run manifest
+  (totals, git, duration, per-test summaries)
 - The test file mentioned in the trace (`statement.loc` and source text)
 
 If multiple trace files exist, prioritize the latest failing attempt.
+`<executionId>` is an auto-generated uuidv4 per run; pick the newest
+entry in `executions.ndjson` to find the most recent execution dir.
 
 ## Workflow
 
@@ -90,6 +97,7 @@ Use this structure:
 
 Use fast filters when needed:
 
-- failing lines: `rg '"status":"(fail|error)"' test-results -g "*.ndjson"`
-- slow statements: `rg '"durationMs":[1-9][0-9]{3,}' test-results -g "*.ndjson"`
-- error payloads: `rg '"error"|\"stderr\"' test-results -g "*.ndjson"`
+- failing lines: `rg '"status":"(fail|error)"' heal-traces -g "*.ndjson"`
+- slow statements: `rg '"durationMs":[1-9][0-9]{3,}' heal-traces -g "*.ndjson"`
+- error payloads: `rg '"error"|\"stderr\"' heal-traces -g "*.ndjson"`
+- latest run dir: `tail -n 1 heal-traces/executions.ndjson` → read `executionId`

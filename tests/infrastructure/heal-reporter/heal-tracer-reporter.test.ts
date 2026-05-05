@@ -24,40 +24,60 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'heal-reporter-'));
   projectOutputDir = path.join(tmpDir, 'test-results');
   fs.mkdirSync(projectOutputDir, { recursive: true });
+  delete process.env.HEAL_TRACER_REPORTER;
 });
 
 afterEach(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
+  delete process.env.HEAL_TRACER_REPORTER;
 });
 
-// Per-test helpers that mirror the fixture's contract: create a
-// per-test output dir, write the NDJSON there, register a
-// `.heal-pending/<testId>-<attempt>.json` entry pointing at it.
+// Per-test helpers that mirror the fixture's contract:
+//   - rootDir            heal-traces destination dir, where the
+//                        ndjson lives and the reporter copies
+//                        attachments into.
+//   - playwrightOutputDir source dir Playwright wrote its own
+//                        attachments into; the reporter reads from
+//                        here and copies into rootDir.
+// The fixture writes the registry entry pointing at both.
 function setupTest(
   opts: {
     testId?: string;
     attempt?: number;
     ndjsonContent?: string | null;
     slug?: string;
+    executionId?: string;
   } = {},
-): { ndjsonPath: string; rootDir: string; testId: string; attempt: number } {
+): {
+  ndjsonPath: string;
+  rootDir: string;
+  playwrightOutputDir: string;
+  testId: string;
+  attempt: number;
+  executionId: string;
+} {
   const testId = opts.testId ?? 'tid-abc';
   const attempt = opts.attempt ?? 1;
-  const slug = opts.slug ?? testId;
-  const rootDir = path.join(projectOutputDir, slug);
-  const healDataDir = path.join(rootDir, 'heal-data');
-  fs.mkdirSync(healDataDir, { recursive: true });
-  const ndjsonPath = path.join(healDataDir, 'heal-traces.ndjson');
+  const slug = opts.slug ?? `${testId}-${attempt}`;
+  const executionId = opts.executionId ?? 'exec-1';
+  const rootDir = path.join(tmpDir, 'heal-traces', executionId, testId, String(attempt));
+  fs.mkdirSync(rootDir, { recursive: true });
+  const ndjsonPath = path.join(rootDir, 'heal-traces.ndjson');
   if (opts.ndjsonContent !== null) {
     fs.writeFileSync(
       ndjsonPath,
       opts.ndjsonContent ?? '{"kind":"test-header","schemaVersion":1}\n',
     );
   }
+  const playwrightOutputDir = path.join(projectOutputDir, slug);
+  fs.mkdirSync(playwrightOutputDir, { recursive: true });
   const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
   fs.mkdirSync(path.dirname(registryPath), { recursive: true });
-  fs.writeFileSync(registryPath, JSON.stringify({ ndjsonPath, rootDir }));
-  return { ndjsonPath, rootDir, testId, attempt };
+  fs.writeFileSync(
+    registryPath,
+    JSON.stringify({ ndjsonPath, rootDir, playwrightOutputDir, executionId }),
+  );
+  return { ndjsonPath, rootDir, playwrightOutputDir, testId, attempt, executionId };
 }
 
 function fakeConfig(): FullConfig {
@@ -112,6 +132,14 @@ function newReporter(deps: ConstructorParameters<typeof HealTracerReporter>[0] =
   return reporter;
 }
 
+describe('HealTracerReporter — onBegin handshake', () => {
+  it('sets HEAL_TRACER_REPORTER=1 so worker fixtures can detect registration', () => {
+    expect(process.env.HEAL_TRACER_REPORTER).toBeUndefined();
+    new HealTracerReporter().onBegin?.(fakeConfig(), {} as never);
+    expect(process.env.HEAL_TRACER_REPORTER).toBe('1');
+  });
+});
+
 describe('HealTracerReporter — no-op paths', () => {
   it('appends only the test-attachments record when the NDJSON already ends with a test-result', () => {
     const { ndjsonPath } = setupTest({
@@ -150,7 +178,12 @@ describe('HealTracerReporter — no-op paths', () => {
     fs.mkdirSync(path.dirname(registryPath), { recursive: true });
     fs.writeFileSync(
       registryPath,
-      JSON.stringify({ ndjsonPath: '/nowhere/heal-traces.ndjson', rootDir: '/nowhere' }),
+      JSON.stringify({
+        ndjsonPath: '/nowhere/heal-traces.ndjson',
+        rootDir: '/nowhere',
+        playwrightOutputDir: '/nowhere/pw',
+        executionId: 'exec-x',
+      }),
     );
     const reporter = newReporter();
     expect(() => reporter.onTestEnd(fakeTestCase(), fakeResult())).not.toThrow();
@@ -328,12 +361,27 @@ describe('HealTracerReporter — crash rescue', () => {
 });
 
 describe('HealTracerReporter — attachments', () => {
-  it('appends a test-attachments record on clean tests, with paths relative to the test outputDir', () => {
-    const { ndjsonPath, rootDir } = setupTest({
+  // Helper: drop a small file at <playwrightOutputDir>/<rel> so the
+  // reporter's copy step has something to read.
+  function writeSrc(playwrightOutputDir: string, rel: string, body = 'x'): string {
+    const abs = path.join(playwrightOutputDir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, body);
+    return abs;
+  }
+
+  it('copies trace.zip and videos into the heal-traces tree, paths relative to the per-attempt dir', () => {
+    const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
       ndjsonContent:
         '{"kind":"test-header","schemaVersion":1}\n' +
         '{"kind":"test-result","status":"passed","duration":10}\n',
     });
+    const traceSrc = writeSrc(playwrightOutputDir, 'trace.zip', 'TRACE');
+    const videoSrc = writeSrc(
+      playwrightOutputDir,
+      path.join('pages', 'page-1', 'video.webm'),
+      'VIDEO',
+    );
     const reporter = newReporter();
     reporter.onTestEnd(
       fakeTestCase(),
@@ -341,16 +389,8 @@ describe('HealTracerReporter — attachments', () => {
         status: 'passed',
         duration: 10,
         attachments: [
-          {
-            name: 'trace',
-            path: path.join(rootDir, 'trace.zip'),
-            contentType: 'application/zip',
-          },
-          {
-            name: 'video',
-            path: path.join(rootDir, 'pages', 'page-1', 'video.webm'),
-            contentType: 'video/webm',
-          },
+          { name: 'trace', path: traceSrc, contentType: 'application/zip' },
+          { name: 'video', path: videoSrc, contentType: 'video/webm' },
         ],
       } as unknown as Partial<TestResult>),
     );
@@ -365,10 +405,49 @@ describe('HealTracerReporter — attachments', () => {
       { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
       {
         name: 'video',
-        path: 'pages/page-1/video.webm',
+        path: 'videos/video.webm',
         contentType: 'video/webm',
       },
     ]);
+
+    // Files actually landed in the heal-traces tree.
+    expect(fs.readFileSync(path.join(rootDir, 'trace.zip'), 'utf8')).toBe('TRACE');
+    expect(fs.readFileSync(path.join(rootDir, 'videos', 'video.webm'), 'utf8')).toBe('VIDEO');
+  });
+
+  it('preserves subdirs for non-trace, non-video attachments (e.g. user testInfo.attach)', () => {
+    const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const userSrc = writeSrc(
+      playwrightOutputDir,
+      path.join('user-attachments', 'foo.json'),
+      '{"a":1}',
+    );
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          {
+            name: 'foo',
+            path: userSrc,
+            contentType: 'application/json',
+          },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: { name: string; path: string; contentType: string }[];
+    };
+    expect(last.attachments[0].path).toBe('user-attachments/foo.json');
+    expect(fs.readFileSync(path.join(rootDir, 'user-attachments', 'foo.json'), 'utf8')).toBe(
+      '{"a":1}',
+    );
   });
 
   it('writes an empty test-attachments record when Playwright produced no attachments', () => {
@@ -387,7 +466,7 @@ describe('HealTracerReporter — attachments', () => {
     expect(last.attachments).toEqual([]);
   });
 
-  it('drops attachments whose path falls outside the test outputDir', () => {
+  it('drops attachments whose source path falls outside Playwright outputDir', () => {
     const { ndjsonPath } = setupTest({
       ndjsonContent:
         '{"kind":"test-header","schemaVersion":1}\n' +
@@ -414,8 +493,9 @@ describe('HealTracerReporter — attachments', () => {
     expect(last.attachments).toEqual([]);
   });
 
-  it('also appends test-attachments when rescuing a crashed test (after the synthetic test-result)', () => {
-    const { ndjsonPath, rootDir } = setupTest();
+  it('also copies + appends attachments when rescuing a crashed test (after the synthetic test-result)', () => {
+    const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest();
+    const traceSrc = writeSrc(playwrightOutputDir, 'trace.zip', 'CRASH-TRACE');
     const reporter = newReporter();
     reporter.onTestEnd(
       fakeTestCase(),
@@ -423,18 +503,13 @@ describe('HealTracerReporter — attachments', () => {
         status: 'failed',
         duration: 100,
         errors: [{ message: 'Worker process exited unexpectedly' }],
-        attachments: [
-          {
-            name: 'trace',
-            path: path.join(rootDir, 'trace.zip'),
-            contentType: 'application/zip',
-          },
-        ],
+        attachments: [{ name: 'trace', path: traceSrc, contentType: 'application/zip' }],
       } as unknown as Partial<TestResult>),
     );
     const lines = readLines(ndjsonPath);
     expect(lines.at(-2)).toContain('"test-result"');
     expect(lines.at(-1)).toContain('"test-attachments"');
+    expect(fs.readFileSync(path.join(rootDir, 'trace.zip'), 'utf8')).toBe('CRASH-TRACE');
   });
 
   it('cleans up the registry entry on every test end', () => {
@@ -476,13 +551,15 @@ describe('HealTracerReporter — onRescue hook', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].record.kind).toBe('test-result');
     expect(calls[0].record.error?.name).toBe('WorkerCrash');
-    expect(calls[0].ctx).toEqual({
+    expect(calls[0].ctx).toMatchObject({
       ndjsonPath,
       rootDir,
       testId: 'tid-42',
       attempt: 1,
       workerIndex: 3,
+      executionId: 'exec-1',
     });
+    expect(typeof calls[0].ctx.playwrightOutputDir).toBe('string');
   });
 
   it('does NOT invoke onRescue when the reporter short-circuits (NDJSON already terminated)', async () => {

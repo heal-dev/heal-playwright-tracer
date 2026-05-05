@@ -11,6 +11,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { LocalViewerServer } from '../../../src/infrastructure/local-viewer-adapter/local-viewer-server';
 
+const EXEC = 'exec-fixed';
+const TID = 't1';
+const ATTEMPT = 1;
+
 const HEADER = {
   kind: 'test-header',
   schemaVersion: 1,
@@ -23,7 +27,7 @@ const HEADER = {
     retry: 0,
     startedAt: 1,
     env: {},
-    context: { testId: 't1', attempt: 1 },
+    context: { testId: TID, attempt: ATTEMPT, executionId: EXEC },
   },
 };
 const STMT_WITH_SCREENSHOT = {
@@ -51,13 +55,24 @@ const ATTACHMENTS = {
   kind: 'test-attachments',
   attachments: [
     { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
-    { name: 'video', path: 'video.webm', contentType: 'video/webm' },
-    {
-      name: 'video',
-      path: 'pages/page-1/video.webm',
-      contentType: 'video/webm',
-    },
+    { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
   ],
+};
+const EXECUTION_RECORD = {
+  kind: 'execution',
+  executionId: EXEC,
+  source: 'env',
+  startedAt: 100,
+  endedAt: 200,
+  durationMs: 100,
+  totals: {
+    tests: 1,
+    passed: 1,
+    failed: 0,
+    timedOut: 0,
+    skipped: 0,
+    interrupted: 0,
+  },
 };
 
 let root: string;
@@ -72,43 +87,39 @@ beforeAll(async () => {
   await writeFile(path.join(bundleDir, 'index.html'), '<!doctype html><body>SPA</body>', 'utf-8');
   await writeFile(path.join(bundleDir, 'app.js'), 'console.log("ok");', 'utf-8');
 
-  // Single-test fixture
-  const dataDir = path.join(root, 'logs-in', 'heal-data');
-  await mkdir(dataDir, { recursive: true });
+  // heal-traces tree: <root>/heal-traces/<EXEC>/<TID>/<ATTEMPT>/...
+  const testDir = path.join(root, 'heal-traces', EXEC, TID, String(ATTEMPT));
+  await mkdir(path.join(testDir, 'screenshots'), { recursive: true });
+  await mkdir(path.join(testDir, 'videos'), { recursive: true });
   await writeFile(
-    path.join(dataDir, 'heal-traces.ndjson'),
+    path.join(testDir, 'heal-traces.ndjson'),
     [HEADER, STMT_WITH_SCREENSHOT, RESULT, ATTACHMENTS].map((l) => JSON.stringify(l)).join('\n'),
     'utf-8',
   );
   await writeFile(
-    path.join(dataDir, 'stmt-0001.png'),
+    path.join(testDir, 'screenshots', 'stmt-0001.png'),
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
   );
-  // trace.zip + two videos referenced from ATTACHMENTS.
-  await writeFile(path.join(root, 'logs-in', 'trace.zip'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  await writeFile(path.join(testDir, 'trace.zip'), Buffer.from([0x50, 0x4b, 0x03, 0x04]));
   await writeFile(
-    path.join(root, 'logs-in', 'video.webm'),
+    path.join(testDir, 'videos', 'video.webm'),
     Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x86, 0x81]),
   );
-  await mkdir(path.join(root, 'logs-in', 'pages', 'page-1'), {
-    recursive: true,
-  });
+
+  // Executions index
   await writeFile(
-    path.join(root, 'logs-in', 'pages', 'page-1', 'video.webm'),
-    Buffer.from([0x1a, 0x45, 0xdf, 0xa3]),
+    path.join(root, 'heal-traces', 'executions.ndjson'),
+    JSON.stringify(EXECUTION_RECORD) + '\n',
+    'utf-8',
   );
 
   server = new LocalViewerServer({
     rootDir: root,
     bundleDir,
-    port: 0, // any free port; we read the actual port after listen
+    port: 0,
     hostname: '127.0.0.1',
   });
-  // Bind to port 0 → read assigned port back. Patch the underlying
-  // server after start() resolves.
   await server.start();
-  // The server starts listening on the OS-assigned port; expose it
-  // by reading the AddressInfo via the underlying http.Server.
   const addr = (server as unknown as { server: import('node:http').Server }).server.address();
   if (!addr || typeof addr === 'string') {
     throw new Error('expected AddressInfo');
@@ -128,55 +139,114 @@ describe('LocalViewerServer', () => {
     expect(body).toContain('SPA');
   });
 
-  it('GET /api/index.json returns versioned envelope with discovered tests', async () => {
-    const res = await fetch(`${baseUrl}/api/index.json`);
+  it('GET /api/executions lists known executions', async () => {
+    const res = await fetch(`${baseUrl}/api/executions`);
     expect(res.status).toBe(200);
-    const json = (await res.json()) as {
-      schemaVersion: number;
-      tests: { id: string; title: string }[];
-    };
-    expect(json.schemaVersion).toBe(1);
-    expect(json.tests).toHaveLength(1);
-    expect(json.tests[0].title).toBe('logs in');
+    const json = (await res.json()) as { executions: { executionId: string }[] };
+    expect(json.executions).toHaveLength(1);
+    expect(json.executions[0].executionId).toBe(EXEC);
   });
 
-  it('GET /api/trace/:id rewrites screenshot filenames to URLs', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/trace/${encodeURIComponent(id)}`);
+  it('GET /api/executions/:id/index.json returns the per-execution index', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/index.json`);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as {
+      executionId: string;
+      schemaVersion: number;
+      tests: { id: string; title: string; playwrightTestId: string; attempt: number }[];
+    };
+    expect(json.executionId).toBe(EXEC);
+    expect(json.schemaVersion).toBe(1);
+    expect(json.tests).toHaveLength(1);
+    expect(json.tests[0]).toMatchObject({
+      id: `${TID}_${ATTEMPT}`,
+      playwrightTestId: TID,
+      attempt: ATTEMPT,
+      title: 'logs in',
+    });
+  });
+
+  it('GET /api/executions/:id/index.json on an unknown execution returns an empty index', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/unknown/index.json`);
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { executionId: string; tests: unknown[] };
+    expect(json.executionId).toBe('unknown');
+    expect(json.tests).toEqual([]);
+  });
+
+  it('GET /api/executions/:id/tests/:tid/:attempt rewrites screenshot URLs into the new layout', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
     expect(res.status).toBe(200);
     const trace = (await res.json()) as {
       statements: { screenshot?: string }[];
     };
-    expect(trace.statements[0].screenshot).toMatch(
-      new RegExp(`^/api/screenshot/${id}/stmt-0001\\.png$`),
+    expect(trace.statements[0].screenshot).toBe(
+      `/api/executions/${EXEC}/screenshot/${TID}/${ATTEMPT}/stmt-0001.png`,
     );
   });
 
-  it('GET /api/screenshot/:id/:file returns the binary PNG', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/screenshot/${encodeURIComponent(id)}/stmt-0001.png`);
+  it('GET /api/executions/:id/screenshot/:tid/:attempt/:file returns the PNG', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/screenshot/${TID}/${ATTEMPT}/stmt-0001.png`,
+    );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('image/png');
     const buf = Buffer.from(await res.arrayBuffer());
     expect(buf.subarray(0, 4)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47]));
   });
 
-  it('rejects path traversal in screenshot filename', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
+  it('GET /api/executions/:id/asset/:tid/:attempt/trace.zip serves the binary trace', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/trace.zip`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/zip');
+    const buf = Buffer.from(await res.arrayBuffer());
+    expect(buf.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+  });
+
+  it('GET /api/executions/:id/asset/:tid/:attempt/videos/<file> returns the video', async () => {
     const res = await fetch(
-      `${baseUrl}/api/screenshot/${encodeURIComponent(id)}/${encodeURIComponent('../../etc/passwd')}`,
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('video/webm');
+  });
+
+  it('GET /api/executions/:id/tests/:tid/:attempt carries attachments with new-layout URLs', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
+    const trace = (await res.json()) as {
+      attachments: { url: string; name: string }[];
+    };
+    expect(trace.attachments).toHaveLength(2);
+    const trace0 = trace.attachments.find((a) => a.name === 'trace');
+    expect(trace0?.url).toBe(`/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/trace.zip`);
+  });
+
+  it('rejects path traversal in screenshot filename', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/screenshot/${TID}/${ATTEMPT}/${encodeURIComponent('../../etc/passwd')}`,
     );
     expect(res.status).toBe(400);
   });
 
-  it('returns 404 for unknown trace id', async () => {
-    const res = await fetch(`${baseUrl}/api/trace/does-not-exist`);
+  it('rejects path traversal in asset path', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/${encodeURIComponent('../../etc/passwd')}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 for non-numeric attempt', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/notanumber`);
+    // The path doesn't match our regex (which requires \d+) so it
+    // falls through to the SPA — that's the SPA fallback by design.
+    // Use a path that DOES match the shape but with attempt=0:
+    const res2 = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/0`);
+    expect(res2.status).toBe(400);
+    expect(res.status).toBe(200); // SPA fallback for non-API-shaped URLs
+  });
+
+  it('returns 404 for unknown test', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/missing/1`);
     expect(res.status).toBe(404);
   });
 
@@ -188,89 +258,46 @@ describe('LocalViewerServer', () => {
   });
 
   it('rejects non-GET methods', async () => {
-    const res = await fetch(`${baseUrl}/api/index.json`, { method: 'POST' });
+    const res = await fetch(`${baseUrl}/api/executions`, { method: 'POST' });
     expect(res.status).toBe(405);
   });
 
-  it('GET /api/trace/:id includes video URLs (rewritten to /api/asset)', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/trace/${encodeURIComponent(id)}`);
-    const trace = (await res.json()) as {
-      videos: { url: string; label: string }[];
-    };
-    expect(trace.videos.map((v) => v.url).sort()).toEqual([
-      `/api/asset/${id}/pages/page-1/video.webm`,
-      `/api/asset/${id}/video.webm`,
-    ]);
-    expect(trace.videos.every((v) => v.label === 'video.webm')).toBe(true);
+  it('OPTIONS preflight includes Access-Control-Allow-Private-Network', async () => {
+    const res = await fetch(`${baseUrl}/api/executions`, { method: 'OPTIONS' });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-private-network')).toBe('true');
+  });
+});
+
+describe('LocalViewerServer.boundPort()', () => {
+  it('returns null before start, a positive integer after start, and null after stop', async () => {
+    const s = new LocalViewerServer({
+      rootDir: root,
+      bundleDir,
+      port: 0,
+      hostname: '127.0.0.1',
+    });
+    expect(s.boundPort()).toBeNull();
+    await s.start();
+    const p = s.boundPort();
+    expect(typeof p).toBe('number');
+    expect(p).toBeGreaterThan(0);
+    await s.stop();
+    expect(s.boundPort()).toBeNull();
   });
 
-  it('GET /api/trace/:id carries the full attachments list with rewritten URLs', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/trace/${encodeURIComponent(id)}`);
-    const trace = (await res.json()) as {
-      attachments: {
-        url: string;
-        name: string;
-        path: string;
-        contentType: string;
-      }[];
-    };
-    expect(trace.attachments).toHaveLength(3);
-    const trace0 = trace.attachments.find((a) => a.name === 'trace');
-    expect(trace0?.url).toBe(`/api/asset/${id}/trace.zip`);
-    expect(trace0?.contentType).toBe('application/zip');
-  });
-
-  it('GET /api/asset/:id/trace.zip serves the binary trace file', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/asset/${encodeURIComponent(id)}/trace.zip`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('application/zip');
-    const buf = Buffer.from(await res.arrayBuffer());
-    expect(buf.subarray(0, 4)).toEqual(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
-  });
-
-  it('GET /api/video/:id/:file returns the binary video', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(`${baseUrl}/api/video/${encodeURIComponent(id)}/video.webm`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('video/webm');
-    const buf = Buffer.from(await res.arrayBuffer());
-    expect(buf.length).toBeGreaterThan(0);
-  });
-
-  it('GET /api/video/:id/<nested>/video.webm serves nested per-page videos', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(
-      `${baseUrl}/api/video/${encodeURIComponent(id)}/pages/page-1/video.webm`,
-    );
-    expect(res.status).toBe(200);
-    expect(res.headers.get('content-type')).toBe('video/webm');
-  });
-
-  it('rejects path traversal in video filename', async () => {
-    const indexRes = await fetch(`${baseUrl}/api/index.json`);
-    const index = (await indexRes.json()) as { tests: { id: string }[] };
-    const id = index.tests[0].id;
-    const res = await fetch(
-      `${baseUrl}/api/video/${encodeURIComponent(id)}/${encodeURIComponent('../../etc/passwd')}`,
-    );
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 404 for unknown video id', async () => {
-    const res = await fetch(`${baseUrl}/api/video/does-not-exist/video.webm`);
-    expect(res.status).toBe(404);
+  it('reflects an OS-assigned ephemeral port when port=0 is requested', async () => {
+    const s = new LocalViewerServer({
+      rootDir: root,
+      bundleDir,
+      port: 0,
+      hostname: '127.0.0.1',
+    });
+    await s.start();
+    const p = s.boundPort();
+    // OS-assigned ephemeral port is well above the privileged range.
+    expect(p).not.toBe(0);
+    expect(p! >= 1024).toBe(true);
+    await s.stop();
   });
 });

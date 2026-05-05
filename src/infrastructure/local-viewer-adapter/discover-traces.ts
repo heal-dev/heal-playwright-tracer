@@ -4,27 +4,34 @@
  * Please see the LICENSE file at the root of this repository
  */
 
-// Walks a directory tree starting at `rootDir` and produces the
-// per-test summary index the SPA fetches at `/api/index.json`. Looks
-// recursively for any `heal-data/` directory containing
-// `heal-traces.ndjson` — Playwright's `outputDir` doesn't have to be
-// a direct child of `rootDir`, so this lets users run
-// `heal-tracer view` from anywhere above their tests' output.
+// Discovers executions and per-test traces from the persistent
+// `heal-traces/` tree:
 //
-// Discovery stays best-effort:
-//   - obvious noise (`node_modules`, `.git`, build dirs) is pruned;
-//   - symlinks are not followed (avoids loops, scoped to the user's
-//     own working tree);
-//   - the walk caps at MAX_DIRS_WALKED to keep pathological cases
-//     bounded, and warns when the cap is hit;
-//   - malformed NDJSON files are skipped with a console warning
-//     rather than aborting the whole index.
+//   <rootDir>/heal-traces/
+//   ├── executions.ndjson
+//   └── <executionId>/
+//       ├── execution.json
+//       └── <playwrightTestId>/
+//           └── <attempt>/
+//               ├── heal-traces.ndjson
+//               ├── trace.zip
+//               ├── screenshots/
+//               └── videos/
 //
-// Reads only the head and tail of each `heal-traces.ndjson` so the
-// per-trace cost is O(1), not O(totalLines).
+// Two entry points:
+//   - `discoverExecutions(rootDir)` — list known executions for the
+//     header dropdown. Reads `executions.ndjson` first; falls back to
+//     a directory scan if the index file is missing or partial.
+//   - `discoverTraces(rootDir, executionId)` — list per-attempt
+//     summaries inside one execution.
+//
+// Each summary's `id` is `${playwrightTestId}_${attempt}` — a
+// compound routing key the local-viewer URL splits back into the
+// two path segments the disk layout expects. Keeps the URL one
+// segment shorter than the disk shape while preserving uniqueness.
 
 import type { Dirent } from 'node:fs';
-import { readdir, readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import {
@@ -34,68 +41,57 @@ import {
   type TestHeader,
   type TestResultRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
+import { HealTracesLayout } from '../heal-traces-layout';
+import type { ExecutionManifest, ExecutionRecord, TestStatus } from '../../domain/persistence';
 
-import { HealDataLayout } from '../heal-data-layout/heal-data-layout';
-
-export interface DiscoveredVideo {
-  /**
-   * Path to the video file, relative to the test directory (the
-   * parent of `heal-data/`). May contain a path separator when
-   * Playwright nested the video in a per-page subdir.
-   */
-  file: string;
-  /** Display label — the video's basename, lower-cased. */
-  label: string;
+export interface ExecutionSummary {
+  executionId: string;
+  source?: 'env' | 'generated';
+  startedAt?: number;
+  endedAt?: number;
+  durationMs?: number;
+  totals?: ExecutionRecord['totals'];
+  git?: ExecutionRecord['git'];
+  playwrightVersion?: string;
 }
-
-const isVideoAttachment = (a: TestAttachment): boolean =>
-  a.contentType.toLowerCase().startsWith('video/');
 
 export interface TestSummary {
   /**
-   * Stable id derived from the test directory name. Used by the
-   * server to look up the NDJSON path on `/api/trace/:id` and as the
-   * scoping key for `/api/screenshot/:id/...`. Sanitized — never
-   * contains `..`, `/`, or `\`.
+   * Compound routing key for `/api/.../tests/:playwrightTestId/:attempt`.
+   * Format: `${playwrightTestId}_${attempt}` — the SPA splits on the
+   * last underscore. Sanitized — never contains `..`, `/`, or `\`.
    */
   id: string;
-  /** Path to the NDJSON file, relative to `rootDir`. */
+  /** Underlying Playwright `testInfo.testId`. */
+  playwrightTestId: string;
+  /** 1-indexed attempt number. */
+  attempt: number;
+  /** NDJSON path relative to `<rootDir>/heal-traces/<executionId>/`. */
   ndjsonPath: string;
   title: string;
   titlePath: string[];
   file: string;
   project: string;
-  attempt: number;
-  status: 'passed' | 'failed' | 'timedOut' | 'skipped' | 'interrupted' | 'unknown';
+  status: TestStatus;
   duration: number;
   startedAt: number;
   /**
-   * Playwright-recorded video files for this test. Sourced from the
-   * NDJSON's `test-attachments` record (filtered by `video/*` MIME).
-   * Empty when video isn't enabled in the user's Playwright config
-   * OR when `HealTracerReporter` isn't registered.
-   */
-  videos: DiscoveredVideo[];
-  /**
-   * All Playwright attachments for this test (`trace.zip`, video,
-   * failure screenshots, user attachments). Sourced from the
+   * All Playwright attachments for this test. Sourced from the
    * NDJSON's `test-attachments` record. Empty when the reporter
-   * isn't registered.
+   * isn't registered. Videos are NOT separately exposed — consumers
+   * filter on `contentType.startsWith('video/')` to derive them.
    */
   attachments: TestAttachment[];
 }
 
 export interface ViewerIndex {
   schemaVersion: number;
+  executionId: string;
   tests: TestSummary[];
 }
 
-const VIEWER_INDEX_FILENAME = '_viewer-index.json';
-
 const isSafeId = (id: string): boolean =>
   id.length > 0 && !id.includes('..') && !id.includes('/') && !id.includes('\\');
-
-const sanitizeId = (raw: string): string => raw.replace(/[^a-zA-Z0-9._-]+/g, '_');
 
 const parseLine = <T>(line: string): T | null => {
   try {
@@ -122,9 +118,7 @@ const readHeader = async (ndjsonPath: string): Promise<TestHeader | null> => {
 /**
  * Read the tail of the NDJSON to extract the test-result and the
  * test-attachments record (which the reporter appends after
- * test-result). Both are optional — partial traces miss test-result;
- * traces from a runner without `HealTracerReporter` registered miss
- * test-attachments. Reads the file once.
+ * test-result). Both are optional. Reads the file once.
  */
 const readTail = async (
   ndjsonPath: string,
@@ -151,166 +145,193 @@ const readTail = async (
   return { result, attachments };
 };
 
-// Directories whose contents are never relevant — pruned during the
-// walk so a user can `heal-tracer view` from a repo root without
-// scanning the world. Includes the package manager dirs, common
-// build outputs, and VCS metadata.
-const PRUNED_DIR_NAMES = new Set<string>([
-  'node_modules',
-  '.git',
-  '.next',
-  '.cache',
-  'dist',
-  'coverage',
-  '.turbo',
-  '.vercel',
-]);
+const buildSummaryId = (playwrightTestId: string, attempt: number): string =>
+  `${playwrightTestId}_${attempt}`;
 
-const MAX_DIRS_WALKED = 5000;
-
-interface FoundTrace {
-  id: string;
-  absPath: string;
-  relPath: string;
-}
-
-const findHealDataDirs = async (rootDir: string): Promise<FoundTrace[]> => {
-  const results: FoundTrace[] = [];
-  const queue: string[] = [rootDir];
-  let walked = 0;
-  let warnedLimit = false;
-
-  while (queue.length > 0) {
-    if (walked >= MAX_DIRS_WALKED) {
-      if (!warnedLimit) {
-        console.warn(
-          `[heal-tracer] walk capped at ${String(MAX_DIRS_WALKED)} directories. Pass an explicit \`dir\` argument closer to your traces if some are missing.`,
-        );
-        warnedLimit = true;
-      }
-      break;
-    }
-    walked += 1;
-    const current = queue.shift() as string;
-
-    let entries: Dirent[];
-    try {
-      entries = await readdir(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-
-    // If this directory itself is a `heal-data` containing the
-    // NDJSON, surface it and don't descend further.
-    if (
-      path.basename(current) === HealDataLayout.SUBDIR &&
-      entries.some((e) => e.isFile() && e.name === HealDataLayout.NDJSON_FILENAME)
-    ) {
-      const absPath = path.join(current, HealDataLayout.NDJSON_FILENAME);
-      const testDir = path.dirname(current);
-      const relTestDir = path.relative(rootDir, testDir);
-      const id = sanitizeId(relTestDir || path.basename(testDir));
-      if (isSafeId(id)) {
-        const relPath = path.relative(rootDir, absPath);
-        results.push({ id, absPath, relPath });
-      }
-      continue;
-    }
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) {
-        continue;
-      }
-      // Don't follow symlinks: avoids loops and keeps the walk inside
-      // the user's working tree. `Dirent.isDirectory()` is false for
-      // symlinks (regardless of target type) when we don't ask for
-      // following — exactly what we want.
-      if (PRUNED_DIR_NAMES.has(entry.name)) {
-        continue;
-      }
-      queue.push(path.join(current, entry.name));
-    }
-  }
-
-  return results;
+/**
+ * Decode the compound id back into (playwrightTestId, attempt). Splits
+ * on the LAST underscore so test ids that themselves contain underscores
+ * round-trip correctly. Returns null on invalid shapes.
+ */
+export const parseSummaryId = (
+  id: string,
+): { playwrightTestId: string; attempt: number } | null => {
+  if (!isSafeId(id)) return null;
+  const lastUnderscore = id.lastIndexOf('_');
+  if (lastUnderscore <= 0 || lastUnderscore >= id.length - 1) return null;
+  const tid = id.slice(0, lastUnderscore);
+  const attemptStr = id.slice(lastUnderscore + 1);
+  if (!/^\d+$/.test(attemptStr)) return null;
+  const attempt = Number.parseInt(attemptStr, 10);
+  if (attempt <= 0) return null;
+  return { playwrightTestId: tid, attempt };
 };
 
-const summarize = async (
-  id: string,
-  absPath: string,
-  relPath: string,
-): Promise<TestSummary | null> => {
-  const header = await readHeader(absPath);
+interface FoundAttempt {
+  playwrightTestId: string;
+  attempt: number;
+  ndjsonPathAbs: string;
+  ndjsonPathRel: string;
+}
+
+const safeReaddir = async (dir: string): Promise<Dirent[]> => {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+};
+
+const findAttempts = async (executionDir: string): Promise<FoundAttempt[]> => {
+  const out: FoundAttempt[] = [];
+  const testEntries = await safeReaddir(executionDir);
+  for (const testEntry of testEntries) {
+    if (!testEntry.isDirectory()) continue;
+    const playwrightTestId = testEntry.name;
+    const testDir = path.join(executionDir, playwrightTestId);
+    const attemptEntries = await safeReaddir(testDir);
+    for (const attemptEntry of attemptEntries) {
+      if (!attemptEntry.isDirectory()) continue;
+      if (!/^\d+$/.test(attemptEntry.name)) continue;
+      const attempt = Number.parseInt(attemptEntry.name, 10);
+      if (attempt <= 0) continue;
+      const ndjsonPathAbs = path.join(testDir, attemptEntry.name, HealTracesLayout.NDJSON_FILENAME);
+      try {
+        await stat(ndjsonPathAbs);
+      } catch {
+        continue;
+      }
+      const ndjsonPathRel = path.relative(executionDir, ndjsonPathAbs);
+      out.push({ playwrightTestId, attempt, ndjsonPathAbs, ndjsonPathRel });
+    }
+  }
+  return out;
+};
+
+const summarize = async (found: FoundAttempt): Promise<TestSummary | null> => {
+  const header = await readHeader(found.ndjsonPathAbs);
   if (!header) {
     return null;
   }
-  const { result, attachments } = await readTail(absPath);
-
-  const videos: DiscoveredVideo[] = attachments
-    .filter(isVideoAttachment)
-    .map((a) => ({
-      file: a.path,
-      label: path.basename(a.path).toLowerCase(),
-    }))
-    // Stable ordering: alphabetic by relative path.
-    .sort((a, b) => a.file.localeCompare(b.file));
+  const { result, attachments } = await readTail(found.ndjsonPathAbs);
 
   return {
-    id,
-    ndjsonPath: relPath,
+    id: buildSummaryId(found.playwrightTestId, found.attempt),
+    playwrightTestId: found.playwrightTestId,
+    attempt: found.attempt,
+    ndjsonPath: found.ndjsonPathRel,
     title: header.title,
     titlePath: header.titlePath,
     file: header.file,
     project: header.project,
-    attempt: header.context.attempt,
     status: result?.status ?? 'unknown',
     duration: result?.duration ?? 0,
     startedAt: header.startedAt,
-    videos,
     attachments,
   };
 };
 
-export const discoverTraces = async (rootDir: string): Promise<TestSummary[]> => {
-  const files = await findHealDataDirs(rootDir);
+export const discoverTraces = async (
+  rootDir: string,
+  executionId: string,
+): Promise<TestSummary[]> => {
+  const layout = new HealTracesLayout(rootDir, executionId);
+  const executionDir = layout.executionDir();
+  const found = await findAttempts(executionDir);
   const summaries: TestSummary[] = [];
-  for (const { id, absPath, relPath } of files) {
+  for (const f of found) {
     try {
-      const summary = await summarize(id, absPath, relPath);
-      if (summary) {
-        summaries.push(summary);
-      }
+      const s = await summarize(f);
+      if (s) summaries.push(s);
     } catch (err) {
-      console.warn(`[heal-tracer] skipped ${relPath}:`, err);
+      console.warn(`[heal-tracer] skipped ${f.ndjsonPathRel}:`, err);
     }
   }
-
-  // Stable ordering: by file then attempt then title
   summaries.sort((a, b) => {
     const byFile = a.file.localeCompare(b.file);
-    if (byFile !== 0) {
-      return byFile;
-    }
+    if (byFile !== 0) return byFile;
     const byAttempt = a.attempt - b.attempt;
-    if (byAttempt !== 0) {
-      return byAttempt;
-    }
-
+    if (byAttempt !== 0) return byAttempt;
     return a.title.localeCompare(b.title);
   });
-
   return summaries;
 };
 
-export const buildIndex = (tests: TestSummary[]): ViewerIndex => ({
+export const buildIndex = (executionId: string, tests: TestSummary[]): ViewerIndex => ({
   schemaVersion: HEAL_TRACE_SCHEMA_VERSION,
+  executionId,
   tests,
 });
 
-export const writeIndex = async (rootDir: string, tests: TestSummary[]): Promise<void> => {
-  const indexPath = path.join(rootDir, VIEWER_INDEX_FILENAME);
-  const data = buildIndex(tests);
-  await writeFile(indexPath, JSON.stringify(data, null, 2), 'utf-8');
+/**
+ * List executions known under `<rootDir>/heal-traces/`. Tries to read
+ * `executions.ndjson` first; if absent or partial, falls back to
+ * scanning subdirectory names. The index file lists records in the
+ * order runs were appended; we surface them newest-first to match
+ * the typical viewer use ("show me the latest run").
+ */
+export const discoverExecutions = async (rootDir: string): Promise<ExecutionSummary[]> => {
+  const tracesRoot = path.join(rootDir, HealTracesLayout.DIRNAME);
+  const indexed = await readExecutionsIndex(tracesRoot);
+  const indexedIds = new Set(indexed.map((e) => e.executionId));
+
+  // Backfill: any execution dir on disk that the index file doesn't
+  // mention (interrupted runs that didn't reach onEnd, or runs from
+  // before the reporter started writing the index).
+  const dirEntries = await safeReaddir(tracesRoot);
+  for (const entry of dirEntries) {
+    if (!entry.isDirectory()) continue;
+    if (indexedIds.has(entry.name)) continue;
+    if (!isSafeId(entry.name)) continue;
+    const manifestPath = path.join(tracesRoot, entry.name, HealTracesLayout.EXECUTION_MANIFEST);
+    try {
+      const body = await readFile(manifestPath, 'utf-8');
+      const manifest = JSON.parse(body) as ExecutionManifest;
+      indexed.push({
+        executionId: manifest.executionId,
+        source: manifest.source,
+        startedAt: manifest.startedAt,
+        endedAt: manifest.endedAt,
+        durationMs: manifest.durationMs,
+        totals: manifest.totals,
+        git: manifest.git,
+        playwrightVersion: manifest.playwrightVersion,
+      });
+    } catch {
+      indexed.push({ executionId: entry.name });
+    }
+  }
+
+  indexed.sort((a, b) => (b.startedAt ?? 0) - (a.startedAt ?? 0));
+  return indexed;
+};
+
+const readExecutionsIndex = async (tracesRoot: string): Promise<ExecutionSummary[]> => {
+  const indexPath = path.join(tracesRoot, HealTracesLayout.EXECUTIONS_NDJSON);
+  let body: string;
+  try {
+    body = await readFile(indexPath, 'utf-8');
+  } catch {
+    return [];
+  }
+  const out: ExecutionSummary[] = [];
+  for (const line of body.split('\n')) {
+    if (line.trim().length === 0) continue;
+    const parsed = parseLine<ExecutionRecord>(line);
+    if (!parsed || parsed.kind !== 'execution') continue;
+    if (!isSafeId(parsed.executionId)) continue;
+    out.push({
+      executionId: parsed.executionId,
+      source: parsed.source,
+      startedAt: parsed.startedAt,
+      endedAt: parsed.endedAt,
+      durationMs: parsed.durationMs,
+      totals: parsed.totals,
+      git: parsed.git,
+      playwrightVersion: parsed.playwrightVersion,
+    });
+  }
+  return out;
 };
 
 export const isSafeIdForRouting = isSafeId;

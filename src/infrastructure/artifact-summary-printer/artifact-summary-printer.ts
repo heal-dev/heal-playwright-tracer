@@ -5,12 +5,10 @@
  */
 
 // Opt-in per-test summary. Gated by HEAL_PRINT_ARTIFACT_PATHS=1.
-// Prints the test's output directory — the single folder that
-// contains every artifact Playwright and this tracer produce for
-// the test (trace.zip, videos, and the nested `heal-data/` with
-// the ndjson + highlight screenshots).
-
-import { HealDataLayout } from '../heal-data-layout';
+// Prints the per-attempt directory — the single folder that contains
+// every artefact this tracer produced for the test (the ndjson, the
+// per-statement screenshots, and any Playwright artefacts the
+// reporter copied in: trace.zip, video, failure screenshots).
 
 export type ArtifactSummaryStatus = 'passed' | 'failed' | 'timedOut' | 'skipped' | 'interrupted';
 
@@ -25,7 +23,7 @@ export interface SummaryOutputStream {
 
 export class ArtifactSummaryPrinter {
   constructor(
-    private readonly layout: HealDataLayout,
+    private readonly testDir: string,
     private readonly stream: SummaryOutputStream = process.stderr,
   ) {}
 
@@ -37,7 +35,7 @@ export class ArtifactSummaryPrinter {
   formatSummary(summary: ArtifactSummary): string {
     return (
       `[heal-playwright-tracer] ${summary.title} (${summary.status})\n` +
-      `  test artifacts dir: ${this.layout.outputDir}\n`
+      `  test artifacts dir: ${this.testDir}\n`
     );
   }
 }

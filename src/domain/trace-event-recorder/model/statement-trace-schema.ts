@@ -96,6 +96,15 @@ export interface TestContext {
    * line numbers required.
    */
   testCaseId?: number;
+  /**
+   * Per-process execution id. Sourced from `HEAL_EXECUTION_ID` when
+   * set (so multi-shard CI shares one id), else a per-process
+   * `randomUUID()`. Used to scope on-disk artefacts under
+   * `<rootDir>/heal-traces/<executionId>/...` and to group
+   * historical runs in the local viewer. Optional for backwards
+   * compatibility with traces produced before this field existed.
+   */
+  executionId?: string;
 }
 
 export interface TestEnv {

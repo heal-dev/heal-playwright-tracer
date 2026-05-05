@@ -39,8 +39,12 @@ import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/h
 export interface HealTracerTestContext {
   testInfo: TestInfo;
   /**
-   * Absolute path to the per-test `heal-data` directory. Created by
-   * the fixture before any factory runs.
+   * Absolute path to the per-(test, attempt) directory under the
+   * persistent history root — `<cwd>/heal-traces/<executionId>/<testId>/<attempt>/`.
+   * Created by the fixture before any factory runs. The ndjson, the
+   * per-statement screenshots, and any reporter-copied Playwright
+   * artefacts (trace.zip, video, failure screenshots) all land
+   * inside this directory.
    */
   healDataDir: string;
   transport: {
@@ -52,13 +56,22 @@ export interface HealTracerTestContext {
      */
     testId: string;
     attempt: number;
-    /** Absolute `testInfo.outputDir`. */
+    /**
+     * Per-process executionId resolved at fixture time
+     * (HEAL_EXECUTION_ID, else uuidv4).
+     */
+    executionId: string;
+    /**
+     * Absolute path to the per-(test, attempt) directory under the
+     * persistent heal-traces tree — same as `healDataDir`. Kept on
+     * `transport` so exporters that ship artefacts out-of-band have
+     * a stable name for the directory they should consult.
+     */
     rootDir: string;
     /**
      * Absolute path to the per-test `heal-traces.ndjson` file the
-     * default NDJSON exporter writes to. Sourced from `HealDataLayout`
-     * so it reflects the real on-disk location regardless of user
-     * Playwright config (custom `outputDir`, snapshot paths, etc.).
+     * default NDJSON exporter writes to. Sourced from
+     * `HealTracesLayout` so it reflects the real on-disk location.
      * Exporters that ship artifacts out-of-band can use this as the
      * authoritative location of the per-test trace file.
      */
