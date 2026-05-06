@@ -17,3 +17,12 @@
 export const HEAL_ENTER = '__heal_enter';
 export const HEAL_OK = '__heal_ok';
 export const HEAL_THROW = '__heal_throw';
+
+// User-extensible per-statement async hook. The Babel plugin emits
+// `await globalThis.__heal_preprocess?.(meta)` inside the try body
+// before the user's statement when the enclosing function is async.
+// The fixture installs the global at test start by composing every
+// `preProcessor` registered through `configureTracer({...})`. Stays
+// `undefined` when no preprocessors are configured, so the optional
+// call short-circuits to a no-op.
+export const HEAL_PREPROCESS = '__heal_preprocess';

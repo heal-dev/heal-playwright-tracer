@@ -25,6 +25,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { STUB_EXPORTER_SOURCE } from './test-doubles/stub-exporter-source';
+import { PREPROCESS_SOURCE } from './test-doubles/preprocess-source';
 
 export interface SandboxOptions {
   /** Absolute path to the `@heal-dev/heal-playwright-tracer` tarball produced by global-setup. */
@@ -45,6 +46,14 @@ export interface SandboxOptions {
    * leave this unset; the reporter is part of the default config.
    */
   withoutHealReporter?: boolean;
+  /**
+   * When true, scaffold a `heal-preprocess.ts` module next to
+   * `playwright.config.ts` and register its export via
+   * `configureTracer({ preProcessors: [...] })`. The preprocessor
+   * scans `meta.source` for `marker:<word>` and appends a JSON line
+   * to `<ctx.healDataDir>/preprocess-record.ndjson` on each hit.
+   */
+  withPreProcessor?: boolean;
 }
 
 export class IntegrationSandbox {
@@ -78,6 +87,10 @@ export class IntegrationSandbox {
 
     if (this.opts.withStubExporter) {
       fs.writeFileSync(path.join(root, 'heal-stub-exporter.ts'), STUB_EXPORTER_SOURCE);
+    }
+
+    if (this.opts.withPreProcessor) {
+      fs.writeFileSync(path.join(root, 'heal-preprocess.ts'), PREPROCESS_SOURCE);
     }
 
     fs.mkdirSync(path.join(root, 'tests'));
@@ -156,14 +169,28 @@ export class IntegrationSandbox {
   }
 
   private buildConfig(): string {
-    const head = this.opts.withStubExporter
-      ? `import { defineConfig } from '@playwright/test';
-import { configureTracer } from '@heal-dev/heal-playwright-tracer';
-import { stubExporterFactory } from './heal-stub-exporter';
+    // Build the import + configureTracer block from whichever
+    // extensions were requested. Stub exporter and pre-processor are
+    // independent — both can be enabled, neither is, or one of each.
+    const importLines: string[] = [`import { defineConfig } from '@playwright/test';`];
+    const tracerOpts: string[] = [];
+    if (this.opts.withStubExporter || this.opts.withPreProcessor) {
+      importLines.push(`import { configureTracer } from '@heal-dev/heal-playwright-tracer';`);
+    }
+    if (this.opts.withStubExporter) {
+      importLines.push(`import { stubExporterFactory } from './heal-stub-exporter';`);
+      tracerOpts.push(`exporters: [stubExporterFactory]`);
+    }
+    if (this.opts.withPreProcessor) {
+      importLines.push(`import { recordingPreProcessor } from './heal-preprocess';`);
+      tracerOpts.push(`preProcessors: [recordingPreProcessor]`);
+    }
+    const head =
+      tracerOpts.length === 0
+        ? importLines.join('\n') + '\n'
+        : `${importLines.join('\n')}
 
-configureTracer({ exporters: [stubExporterFactory] });
-`
-      : `import { defineConfig } from '@playwright/test';
+configureTracer({ ${tracerOpts.join(', ')} });
 `;
 
     const reporter = this.opts.withoutHealReporter

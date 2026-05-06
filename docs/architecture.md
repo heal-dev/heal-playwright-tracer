@@ -149,3 +149,49 @@ act, so a transient slowness in our pre-screenshot scroll never
 turns into a test failure.
 
 The cap value is configurable — see [`configuration.md`](configuration.md).
+
+## On-disk layout
+
+Per (test, attempt), the tracer produces:
+
+```
+heal-traces/<executionId>/<playwrightTestId>/<attempt>/
+├── heal-traces.ndjson     ← always present (statement stream)
+├── heal-network.ndjson    ← only when `network.enabled`
+├── heal-console.ndjson    ← only when `console.enabled`
+├── trace.zip              ← copied by the reporter from Playwright's outputDir
+├── screenshots/           ← locator-action highlight PNGs
+└── videos/                ← Playwright videos copied in by the reporter
+```
+
+`heal-traces.ndjson` is the canonical timeline: `test-header`,
+optional `test-sidecars` (listing the sibling NDJSON filenames),
+zero or more `statement` records, exactly one `test-result`, and an
+optional `test-attachments` appended by the reporter.
+
+The two sidecars live next to it because the streams have different
+write patterns. The statement stream is single-writer, append-only,
+and produced by a deterministic projector. Network and console
+events fire at any time across every page the test owns, including
+popups and api-request contexts; mixing them into the statement file
+would force the projector to merge unrelated streams and would make
+crash recovery harder. Splitting also lets retention rules differ —
+keeping the statement stream forever while dropping network bodies
+on green tests, for instance.
+
+Cross-link is by `t` (ms since `Statement.startedAt`, identical
+clock origin) and an optional `statementSeq` snapshot of the
+top-of-enter-stack at emit time. The viewer interleaves the streams
+on a single timeline without joining records.
+
+## Schema versioning
+
+`HEAL_TRACE_SCHEMA_VERSION` (in
+[`statement-trace-schema.ts`](../src/domain/trace-event-recorder/model/statement-trace-schema.ts))
+is bumped whenever a backwards-incompatible change lands in the main
+NDJSON contract — adding a new record `kind` counts. The version
+appears on every `test-header` so consumers can branch on it.
+`SCHEMA_VERSION` (raw recorder events in
+[`trace-schema.ts`](../src/domain/trace-event-recorder/model/trace-schema.ts))
+is independent: it tracks the in-process event stream the projector
+folds into records, and only bumps when an event variant changes.

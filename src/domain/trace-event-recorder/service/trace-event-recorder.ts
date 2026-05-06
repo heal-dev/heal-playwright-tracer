@@ -115,6 +115,41 @@ export class TraceEventRecorder implements TraceEventRecorderState {
     if (top) top.screenshot = filename;
   };
 
+  /**
+   * Read the `seq` of the enter event currently on top of the active
+   * stack — i.e. "what statement is running right now" — for sidecar
+   * adapters (network, console) that need to attribute an out-of-band
+   * event back to a statement. Returns `undefined` when the stack is
+   * empty (event fired between statements / outside any test body).
+   *
+   * Pure read; no allocation, safe to call from a Playwright event
+   * listener on the hot path.
+   */
+  getCurrentStatementSeq = (): number | undefined => {
+    return this.enterStack.peek()?.seq;
+  };
+
+  /**
+   * Snapshot the currently-active step path (a copy of the step
+   * stack) for sidecar records that want to denormalize the path the
+   * way `StatementProjector` does. Returns `undefined` when no
+   * `test.step(...)` is active so callers can omit the field
+   * entirely instead of writing an empty array.
+   */
+  getCurrentStepPath = (): string[] | undefined => {
+    if (this.stepStack.length === 0) return undefined;
+    return this.stepStack.slice();
+  };
+
+  /**
+   * The wall-clock origin used by every timestamp in the trace —
+   * sidecar adapters subtract this from `clock.now()` to produce a
+   * `t` field on the same axis as `Statement.t`.
+   */
+  getStartedAt = (): number => {
+    return this.startedAt;
+  };
+
   __enter = (meta: EnterMeta): void => {
     buildEnterEvent(this, meta);
   };

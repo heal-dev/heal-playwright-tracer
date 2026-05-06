@@ -35,6 +35,18 @@ describe('HealTracesLayout', () => {
     );
   });
 
+  it('networkNdjsonPath places heal-network.ndjson at the per-attempt root', () => {
+    expect(layout().networkNdjsonPath(TID, ATTEMPT)).toBe(
+      path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'heal-network.ndjson'),
+    );
+  });
+
+  it('consoleNdjsonPath places heal-console.ndjson at the per-attempt root', () => {
+    expect(layout().consoleNdjsonPath(TID, ATTEMPT)).toBe(
+      path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'heal-console.ndjson'),
+    );
+  });
+
   it('tracePath places trace.zip at the per-attempt root', () => {
     expect(layout().tracePath(TID, ATTEMPT)).toBe(
       path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'trace.zip'),

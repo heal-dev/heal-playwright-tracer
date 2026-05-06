@@ -163,6 +163,44 @@ describe('createRecorder', () => {
     expect(types).toEqual(['meta']);
   });
 
+  it('getCurrentStatementSeq returns the top-of-stack seq while a statement is active', () => {
+    const { rt } = buildHarness();
+    rt.reset();
+    expect(rt.getCurrentStatementSeq()).toBeUndefined();
+    rt.__enter(meta());
+    const inner = rt.getCurrentStatementSeq();
+    expect(typeof inner).toBe('number');
+    rt.__enter(meta({ source: 'nested' }));
+    expect(rt.getCurrentStatementSeq()).toBeGreaterThan(inner!);
+    rt.__ok();
+    expect(rt.getCurrentStatementSeq()).toBe(inner);
+    rt.__ok();
+    expect(rt.getCurrentStatementSeq()).toBeUndefined();
+  });
+
+  it('getCurrentStepPath returns a snapshot of the active step stack, or undefined when empty', () => {
+    const { rt } = buildHarness();
+    rt.reset();
+    expect(rt.getCurrentStepPath()).toBeUndefined();
+    rt.pushStep('outer');
+    rt.pushStep('inner');
+    expect(rt.getCurrentStepPath()).toEqual(['outer', 'inner']);
+    // Snapshot is independent — mutating it does not affect the recorder's stack.
+    const snap = rt.getCurrentStepPath()!;
+    snap.push('forged');
+    expect(rt.getCurrentStepPath()).toEqual(['outer', 'inner']);
+    rt.popStep();
+    rt.popStep();
+    expect(rt.getCurrentStepPath()).toBeUndefined();
+  });
+
+  it('getStartedAt returns the wall-clock origin set by reset()', () => {
+    const { rt, clock } = buildHarness();
+    clock.set(123);
+    rt.reset();
+    expect(rt.getStartedAt()).toBe(123);
+  });
+
   it('__throw without a matching __enter is tolerated (no crash)', () => {
     const { rt, events } = buildHarness();
     rt.reset();

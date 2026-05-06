@@ -65,4 +65,35 @@ describe('NdjsonExporter', () => {
     await exporter.close();
     await expect(exporter.close()).resolves.toBeUndefined();
   });
+
+  it('writes the `prelude` records before any subsequent write()', async () => {
+    const exporter = new NdjsonExporter(tmpFile, {
+      prelude: [
+        { kind: 'test-sidecars', network: 'heal-network.ndjson' },
+        { kind: 'test-sidecars', console: 'heal-console.ndjson' },
+      ],
+    });
+    exporter.write({ kind: 'test-result', status: 'passed', duration: 1 });
+    await exporter.close();
+
+    const lines = fs.readFileSync(tmpFile, 'utf8').trimEnd().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      kind: 'test-sidecars',
+      network: 'heal-network.ndjson',
+    });
+    expect(JSON.parse(lines[1])).toMatchObject({
+      kind: 'test-sidecars',
+      console: 'heal-console.ndjson',
+    });
+    expect(JSON.parse(lines[2])).toMatchObject({ kind: 'test-result', status: 'passed' });
+  });
+
+  it('an empty `prelude` array is equivalent to omitting the option', async () => {
+    const exporter = new NdjsonExporter(tmpFile, { prelude: [] });
+    exporter.write({ kind: 'test-result', status: 'passed', duration: 0 });
+    await exporter.close();
+    const lines = fs.readFileSync(tmpFile, 'utf8').trimEnd().split('\n');
+    expect(lines).toHaveLength(1);
+  });
 });

@@ -42,8 +42,8 @@ it more than once is safe.
 ## `configureTracer`
 
 `configureTracer` registers extra exporters (fanned out alongside
-the default NDJSON exporter), per-test setup/teardown pairs, and
-optional timeout overrides:
+the default NDJSON exporter), per-test setup/teardown pairs,
+per-statement pre-processors, and optional timeout overrides:
 
 ```ts
 // playwright.config.ts
@@ -57,6 +57,15 @@ configureTracer({
       setup: (ctx) => openTelemetrySession(ctx.testInfo),
       teardown: () => closeTelemetrySession(),
     }),
+  ],
+  preProcessors: [
+    // Async hook fired BEFORE every traced leaf statement.
+    // See "Pre-processors" below.
+    async ({ meta, ctx }) => {
+      if (meta.source.includes('[my-marker=')) {
+        await stampMyMarkerOnPages(ctx.browserContext);
+      }
+    },
   ],
   timeouts: {
     screenshotMs: 10_000, // optional; see "Tuning timeouts" below
@@ -72,6 +81,131 @@ export default defineConfig({
 Full surface: [`src/application/heal-config/types.ts`](src/application/heal-config/types.ts).
 Exporters implement [`HealTraceExporter`](src/domain/trace-event-recorder/port/heal-trace-exporter.ts)
 (`write(record)` + `close()`).
+
+## Pre-processors
+
+A `StatementPreProcessor` is an async function the tracer awaits
+**before** every traced leaf statement runs. It receives the same
+`meta` object the recorder gets (`file`, `startLine`, `kind`,
+`scope`, `source`, …) plus a context exposing the live
+`browserContext`:
+
+```ts
+import type { StatementPreProcessor } from '@heal-dev/heal-playwright-tracer';
+
+const myPreProcessor: StatementPreProcessor = async ({ meta, ctx }) => {
+  // meta:        EnterMeta — the recorder's per-statement payload
+  // ctx:         StatementPreProcessorContext
+  // ctx.browserContext: the live Playwright BrowserContext for the test
+  // ctx.testInfo, ctx.healDataDir, ctx.transport: same as exporter/lifecycle
+};
+```
+
+### When to use one
+
+Pre-processors are for side effects that must complete before
+Playwright resolves the next locator or runs the next call. Typical
+shapes:
+
+- **DOM stamping** — write attributes onto the page so a
+  custom-selector strategy embedded in the test source can resolve.
+- **Eager telemetry** — push a span/event correlated with the
+  upcoming statement (rare; an exporter is usually a better fit).
+- **Page priming** — wait for an idle state, hydrate session
+  storage, etc., when the test source matches a known pattern.
+
+Example — a pre-processor that scans the upcoming statement's source
+for a custom selector convention, and stamps a matching attribute on
+the live DOM before Playwright resolves the locator:
+
+```ts
+import type { StatementPreProcessor } from '@heal-dev/heal-playwright-tracer';
+
+const FOO_SELECTOR = /\[data-foo="([^"]+)"\]/;
+
+export const fooStamper: StatementPreProcessor = async ({ meta, ctx }) => {
+  const match = FOO_SELECTOR.exec(meta.source);
+  if (!match) return;
+  const value = match[1];
+  for (const page of ctx.browserContext.pages()) {
+    await page.evaluate(
+      ({ value }) => {
+        for (const el of document.querySelectorAll(`[data-bar="${value}"]`)) {
+          el.setAttribute('data-foo', value);
+        }
+      },
+      { value },
+    );
+  }
+};
+```
+
+Registered as:
+
+```ts
+configureTracer({ preProcessors: [fooStamper] });
+```
+
+A statement like `await page.locator('[data-foo="abc"]').click()` then
+finds the elements your stamper just decorated.
+
+### Async-only
+
+The Babel plugin emits `await globalThis.__heal_preprocess?.(meta)`
+inside the try block of each leaf statement. That `await` is a syntax
+error in synchronous functions, so the emit is **gated on the
+enclosing function being `async`**:
+
+- Statements inside `async` functions (test bodies, async helpers,
+  async fixtures) → pre-processors run.
+- Statements inside synchronous helpers → pre-processors are skipped
+  silently. If you need pre-processing there, mark the helper
+  `async`.
+
+Playwright's `test()`, `test.beforeEach`, `test.afterEach`,
+`test.beforeAll`, `test.afterAll`, and `test.step` callbacks are all
+required to be async, so the typical test path is fully covered.
+
+### Errors propagate
+
+The pre-processor call lives inside the same try/catch that wraps
+the user statement. A pre-processor that throws will:
+
+1. Trigger `__heal_throw(err)` for the statement (so the trace shows
+   the failure on the statement that triggered it).
+2. Re-throw out of the wrapper, surfacing as a normal Playwright
+   test error.
+
+The user's statement does **not** run when a pre-processor throws.
+If a partial side-effect is acceptable in your domain, defend
+internally (try/catch + log + return) inside the pre-processor.
+
+### Composition order
+
+Multiple pre-processors run in **declaration order**, awaited
+sequentially. A slow one delays every subsequent one for the same
+statement. The fixture installs a single
+`globalThis.__heal_preprocess` per test that loops over the
+registered array — there is no parallelism.
+
+```ts
+configureTracer({
+  preProcessors: [pp1, pp2, pp3],
+  // For each traced leaf: await pp1 → await pp2 → await pp3 → user statement.
+});
+```
+
+### What does NOT trigger pre-processors
+
+- Statements inside files not matched by the Babel plugin's
+  `include` filter.
+- Module-level statements outside any function body.
+- Imports, exports, function declarations, block statements, empty
+  statements, CJS `require` artifacts (skipped by the
+  non-wrappable-statement predicate — same set the trace hook itself
+  ignores).
+- Loop heads (`for (let i = 0; ...; ...)` — the binding can't be
+  hoisted; the body is still instrumented per-statement).
 
 ## Tuning timeouts
 

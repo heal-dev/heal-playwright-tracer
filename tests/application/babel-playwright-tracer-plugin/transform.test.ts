@@ -147,4 +147,81 @@ describe('transform', () => {
     expect(barEnter).toContain(`leadingComment: "inline"`);
     expect(fooEnter).not.toContain('leadingComment');
   });
+
+  describe('pre-processor emit', () => {
+    it('emits `await __heal_preprocess?.(...)` inside the try body for an async test leaf', () => {
+      const out = transform(`test('x', async () => { await page.click("a"); });`);
+      // The preprocess call must appear after `try {` and before the
+      // user statement (`await page.click(...)`). The body of the
+      // outer test() ExpressionStatement also gets wrapped, so we
+      // narrow the assertion to the inner enter block whose source
+      // is the click call.
+      const blocks = out.split('globalThis.__heal_enter?.').slice(1);
+      const innerBlock = blocks.find((b) => b.includes(`source: "await page.click(\\"a\\");"`));
+      expect(innerBlock).toBeDefined();
+      expect(innerBlock!).toContain('await globalThis.__heal_preprocess?.(');
+      // Order: preprocess call must come BEFORE the original statement.
+      const preprocessIdx = innerBlock!.indexOf('await globalThis.__heal_preprocess?.');
+      const userStmtIdx = innerBlock!.indexOf('await page.click("a")');
+      expect(preprocessIdx).toBeGreaterThan(0);
+      expect(userStmtIdx).toBeGreaterThan(preprocessIdx);
+    });
+
+    it('does NOT emit the preprocess call for a leaf inside a sync function', () => {
+      const out = transform(`function helper() { foo(); }`);
+      // `foo();` is wrapped (its enclosing `helper()` is sync) — the
+      // wrapper must not contain an `await` because that would be a
+      // syntax error inside a sync function.
+      expect(out).toContain('foo();');
+      expect(out).not.toContain('__heal_preprocess');
+    });
+
+    it('emits the preprocess call inside the assignments path of a hoisted const', () => {
+      // `const x = await compute();` inside an async fn — the
+      // VariableDeclaration path hoists the binding and assigns
+      // inside the try. The preprocess call must land BEFORE the
+      // hoisted assignment.
+      const out = transform(`test('x', async () => { const x = await compute(); });`);
+      const blocks = out.split('globalThis.__heal_enter?.').slice(1);
+      const declBlock = blocks.find((b) => b.includes(`kind: "variable"`));
+      expect(declBlock).toBeDefined();
+      const preprocessIdx = declBlock!.indexOf('await globalThis.__heal_preprocess?.');
+      // Search for the assignment AFTER the preprocess emit — the
+      // first occurrence of `x = await compute()` is inside the
+      // `source: "..."` meta literal, not the hoisted assignment.
+      const assignIdx = declBlock!.indexOf('x = await compute()', preprocessIdx + 1);
+      expect(preprocessIdx).toBeGreaterThan(0);
+      expect(assignIdx).toBeGreaterThan(preprocessIdx);
+    });
+
+    it('emits the SAME meta object shape for preprocess as for enter', () => {
+      // The preprocess call must receive the full meta literal — same
+      // fields the recorder gets via __heal_enter — so consumer
+      // pre-processors can read file/startLine/source/etc.
+      const out = transform(`test('x', async () => { foo(); });`);
+      const blocks = out.split('globalThis.__heal_enter?.').slice(1);
+      const inner = blocks.find((b) => b.includes(`source: "foo();"`))!;
+      // Both calls must reference the same identifying fields.
+      expect(inner).toMatch(/__heal_preprocess\?\.\(\{[^}]*file:[^}]*startLine:\s*1/);
+      expect(inner).toMatch(/__heal_preprocess\?\.\(\{[^}]*source: "foo\(\);"/);
+    });
+
+    it('async arrow with concise body (no inner statement) — outer leaf still gets preprocess', () => {
+      // The outer statement `test('x', async () => bar());` is itself
+      // a leaf at module level (sync enclosing → no preprocess). The
+      // inner `bar()` is in expression position, never visited as a
+      // Statement. Expect zero preprocess emits.
+      const out = transform(`test('x', async () => bar());`);
+      expect(out).not.toContain('__heal_preprocess');
+    });
+
+    it('produces no double-instrumentation: exactly one preprocess per traced leaf', () => {
+      const out = transform(`test('x', async () => { foo(); bar(); });`);
+      const matches = out.match(/__heal_preprocess\?\.\(/g) ?? [];
+      // Two leaf statements — `foo();` and `bar();` — each gets one
+      // preprocess emit. The outer `test('x', ...)` statement is at
+      // module level (sync enclosing), so it doesn't add a third.
+      expect(matches).toHaveLength(2);
+    });
+  });
 });
