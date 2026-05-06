@@ -71,6 +71,16 @@ import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
+import { withTimeout } from '../../util/with-timeout';
+
+// Defaults for the optional `timeouts` block in `HealTracerConfig`.
+// `screenshotMs` caps best-effort decoration calls in the screenshot
+// pipeline; `lifecycleMs` caps user setup/teardown and the final
+// projector close. On `lifecycleMs` timeouts the fixture logs to
+// stderr and continues the rest of teardown — a hung user exporter
+// must not block the next test from starting.
+const DEFAULT_SCREENSHOT_TIMEOUT_MS = 10_000;
+const DEFAULT_LIFECYCLE_TIMEOUT_MS = 30_000;
 
 // Wrap `expect` so any assertion made against a Locator gets a
 // highlight screenshot stamped onto the active statement, the same
@@ -195,10 +205,15 @@ export const test = base.extend<TraceFixtures>({
       // previous test that crashed before drain ran.
       resetTeardownHooks();
 
+      const { timeouts = {} } = getTracerConfig();
+      const screenshotTimeoutMs = timeouts.screenshotMs ?? DEFAULT_SCREENSHOT_TIMEOUT_MS;
+      const lifecycleTimeoutMs = timeouts.lifecycleMs ?? DEFAULT_LIFECYCLE_TIMEOUT_MS;
+
       const stopScreenshots = startLocatorScreenshotCapture(
         page,
         screenshotsDir,
         setCurrentStatementScreenshot,
+        screenshotTimeoutMs,
       );
       const stdoutSession = new StdoutCaptureSession();
 
@@ -213,7 +228,11 @@ export const test = base.extend<TraceFixtures>({
       for (const factory of lifecycles) {
         try {
           const lc = factory();
-          await lc.setup(tracerCtx);
+          await withTimeout(
+            Promise.resolve(lc.setup(tracerCtx)),
+            lifecycleTimeoutMs,
+            'lifecycle.setup',
+          );
           activeLifecycles.push(lc);
         } catch (err) {
           console.error('[heal-playwright-tracer] lifecycle setup failed:', err);
@@ -228,14 +247,22 @@ export const test = base.extend<TraceFixtures>({
         // still see the per-test globals a lifecycle installed, and
         // BEFORE stopping stdout capture so SDK teardown output lands
         // in the ndjson's `test-result.stdout/stderr`.
-        await drainTeardownHooks();
+        try {
+          await withTimeout(drainTeardownHooks(), lifecycleTimeoutMs, 'onTestTeardown hooks');
+        } catch (err) {
+          console.error('[heal-playwright-tracer] teardown hooks did not finish:', err);
+        }
 
         // Teardown in reverse order (LIFO): the last lifecycle to set
         // up is the first to tear down, matching the mental model of
         // nested `using` blocks.
         for (let i = activeLifecycles.length - 1; i >= 0; i--) {
           try {
-            await activeLifecycles[i].teardown();
+            await withTimeout(
+              Promise.resolve(activeLifecycles[i].teardown()),
+              lifecycleTimeoutMs,
+              'lifecycle.teardown',
+            );
           } catch (err) {
             console.error('[heal-playwright-tracer] lifecycle teardown failed:', err);
           }
@@ -261,15 +288,27 @@ export const test = base.extend<TraceFixtures>({
         // the hanging action on timeout before the catch block could
         // run) gets flushed as `threw` with the test-level error.
         const pendingError = testInfo.errors[0] ?? testInfo.error;
-        await projector.finalize(
-          {
-            status: testInfo.status ?? 'passed',
-            duration: testInfo.duration,
-            stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
-            stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
-          },
-          pendingError,
-        );
+        try {
+          await withTimeout(
+            projector.finalize(
+              {
+                status: testInfo.status ?? 'passed',
+                duration: testInfo.duration,
+                stdout: capturedStdout.stdout.length ? capturedStdout.stdout : undefined,
+                stderr: capturedStdout.stderr.length ? capturedStdout.stderr : undefined,
+              },
+              pendingError,
+            ),
+            lifecycleTimeoutMs,
+            'projector.finalize',
+          );
+        } catch (err) {
+          // The trace may be truncated (final test-result record
+          // and exporter close didn't complete in time) but the
+          // test itself has already finished — keep going so
+          // downstream registry cleanup still runs.
+          console.error('[heal-playwright-tracer] projector.finalize did not finish:', err);
+        }
 
         new ArtifactSummaryPrinter(testDir).print({
           title: testInfo.title,

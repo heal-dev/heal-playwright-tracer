@@ -115,11 +115,41 @@ export interface HealTestLifecycle {
 export type HealTestLifecycleFactory = () => HealTestLifecycle;
 
 /**
- * Shape of the object passed to `configureTracer(...)`. Both fields
+ * Caps applied to async work the tracer wraps around the user's
+ * test. Both fields are optional; the fixture falls back to sensible
+ * defaults when omitted. The point of these caps is that the tracer
+ * must never outlast the work it is decorating — a hung overlay
+ * cleanup or a wedged user exporter must surface and unblock the
+ * test rather than hang it.
+ */
+export interface HealTracerTimeouts {
+  /**
+   * Cap on every async the screenshot pipeline awaits — locator
+   * resolution (`boundingBox`, `locator.evaluate`), overlay draw /
+   * remove (`page.evaluate`), every CDP send (`Overlay.*`,
+   * `Page.captureScreenshot`, `Runtime.*`), `newCDPSession`, and
+   * the `page.screenshot` fallback. Capture is best-effort: on
+   * timeout the screenshot is dropped and the action proceeds.
+   * Default: 10_000ms.
+   */
+  screenshotMs?: number;
+  /**
+   * Cap on user-extensible per-test work — each lifecycle `setup` /
+   * `teardown`, the drained `onTestTeardown` hook chain, and the
+   * final `projector.finalize` (which closes every registered
+   * exporter). On timeout the fixture logs to stderr and continues
+   * with the next teardown step. Default: 30_000ms.
+   */
+  lifecycleMs?: number;
+}
+
+/**
+ * Shape of the object passed to `configureTracer(...)`. All fields
  * are optional — an empty config yields the default behaviour
- * (NDJSON-only output, no lifecycles).
+ * (NDJSON-only output, no lifecycles, default timeouts).
  */
 export interface HealTracerConfig {
   exporters?: HealTraceExporterFactory[];
   lifecycles?: HealTestLifecycleFactory[];
+  timeouts?: HealTracerTimeouts;
 }

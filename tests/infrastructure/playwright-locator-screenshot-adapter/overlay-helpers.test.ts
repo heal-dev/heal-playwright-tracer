@@ -20,11 +20,11 @@ function fakePage(): FakePage {
 }
 
 describe('overlay-helpers', () => {
-  it('drawOverlay calls page.evaluate with nodeId, box, border size, and color', async () => {
+  it('drawOverlay calls page.evaluate with nodeId, box, border size, and colors', async () => {
     const page = fakePage();
     const box = { x: 10, y: 20, width: 30, height: 40 };
 
-    await drawOverlay(page as unknown as Page, 'heal-overlay-1', box);
+    await drawOverlay(page as unknown as Page, 'heal-overlay-1', box, 1000);
 
     expect(page.evaluate).toHaveBeenCalledTimes(1);
     const [fn, args] = page.evaluate.mock.calls[0];
@@ -33,24 +33,26 @@ describe('overlay-helpers', () => {
       nodeId: 'heal-overlay-1',
       box,
       borderSize: 4,
-      color: 'magenta',
+      borderColor: 'magenta',
+      fillColor: 'rgba(255, 0, 255, 0.08)',
     });
   });
 
-  it('drawOverlay payload function builds a canvas positioned at the box coordinates', async () => {
+  it('drawOverlay payload function builds a div positioned at the box coordinates with a translucent fill', async () => {
     const page = fakePage();
     const box = { x: 100, y: 200, width: 50, height: 60 };
 
     // Capture the page-side function so we can drive it with a DOM
     // stub — this exercises every style assignment without a real
     // browser.
-    await drawOverlay(page as unknown as Page, 'id-1', box);
+    await drawOverlay(page as unknown as Page, 'id-1', box, 1000);
     const [drawFn] = page.evaluate.mock.calls[0] as [
       (p: {
         nodeId: string;
         box: { x: number; y: number; width: number; height: number };
         borderSize: number;
-        color: string;
+        borderColor: string;
+        fillColor: string;
       }) => void,
       unknown,
     ];
@@ -73,19 +75,27 @@ describe('overlay-helpers', () => {
     (globalThis as unknown as { document: unknown }).document = fakeDocument;
     (globalThis as unknown as { window: unknown }).window = fakeWindow;
     try {
-      drawFn({ nodeId: 'id-1', box, borderSize: 4, color: 'magenta' });
+      drawFn({
+        nodeId: 'id-1',
+        box,
+        borderSize: 4,
+        borderColor: 'magenta',
+        fillColor: 'rgba(255, 0, 255, 0.08)',
+      });
     } finally {
       (globalThis as unknown as { document?: unknown }).document = origDoc;
       (globalThis as unknown as { window?: unknown }).window = origWin;
     }
 
-    expect(fakeDocument.createElement).toHaveBeenCalledWith('canvas');
+    expect(fakeDocument.createElement).toHaveBeenCalledWith('div');
     expect(node.id).toBe('id-1');
     expect(style.left).toBe('105px');
     expect(style.top).toBe('207px');
     expect(style.width).toBe('50px');
     expect(style.height).toBe('60px');
     expect(style.border).toBe('4px solid magenta');
+    expect(style.backgroundColor).toBe('rgba(255, 0, 255, 0.08)');
+    expect(style.boxSizing).toBe('border-box');
     expect(style.pointerEvents).toBe('none');
     expect(style.position).toBe('absolute');
     expect(appended).toEqual([node]);
@@ -93,7 +103,7 @@ describe('overlay-helpers', () => {
 
   it('removeOverlay calls page.evaluate with the node id', async () => {
     const page = fakePage();
-    await removeOverlay(page as unknown as Page, 'heal-overlay-1');
+    await removeOverlay(page as unknown as Page, 'heal-overlay-1', 1000);
 
     expect(page.evaluate).toHaveBeenCalledTimes(1);
     const [fn, id] = page.evaluate.mock.calls[0];
@@ -103,7 +113,7 @@ describe('overlay-helpers', () => {
 
   it('removeOverlay payload removes the matching element', async () => {
     const page = fakePage();
-    await removeOverlay(page as unknown as Page, 'id-1');
+    await removeOverlay(page as unknown as Page, 'id-1', 1000);
     const [removeFn] = page.evaluate.mock.calls[0] as [(id: string) => void, unknown];
 
     const removed = vi.fn();
@@ -124,7 +134,7 @@ describe('overlay-helpers', () => {
 
   it('removeOverlay payload is a no-op when the element is not found', async () => {
     const page = fakePage();
-    await removeOverlay(page as unknown as Page, 'missing');
+    await removeOverlay(page as unknown as Page, 'missing', 1000);
     const [removeFn] = page.evaluate.mock.calls[0] as [(id: string) => void, unknown];
 
     const fakeDocument = { getElementById: vi.fn(() => null) };
@@ -135,5 +145,27 @@ describe('overlay-helpers', () => {
     } finally {
       (globalThis as unknown as { document?: unknown }).document = origDoc;
     }
+  });
+
+  it('drawOverlay rejects within the configured timeout when page.evaluate hangs', async () => {
+    const hung = {
+      evaluate: vi.fn(() => new Promise<void>(() => {})),
+    };
+    const start = Date.now();
+    await expect(
+      drawOverlay(hung as unknown as Page, 'id', { x: 0, y: 0, width: 1, height: 1 }, 50),
+    ).rejects.toThrow(/drawOverlay did not settle within 50ms/);
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it('removeOverlay rejects within the configured timeout when page.evaluate hangs', async () => {
+    const hung = {
+      evaluate: vi.fn(() => new Promise<void>(() => {})),
+    };
+    const start = Date.now();
+    await expect(removeOverlay(hung as unknown as Page, 'id', 50)).rejects.toThrow(
+      /removeOverlay did not settle within 50ms/,
+    );
+    expect(Date.now() - start).toBeLessThan(500);
   });
 });

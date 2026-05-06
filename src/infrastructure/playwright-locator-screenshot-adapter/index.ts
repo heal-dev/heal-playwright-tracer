@@ -8,11 +8,13 @@
 // every Playwright locator action.
 //
 // Public API:
-//   startLocatorScreenshotCapture(samplePage, outputDir, onScreenshotWritten)
+//   startLocatorScreenshotCapture(samplePage, outputDir, onScreenshotWritten, screenshotTimeoutMs)
 //     Ensures the process-wide Locator.prototype patch is installed,
 //     creates a per-test capture session, and registers it so the
-//     patched methods can find it. Returns a disposer that clears
-//     the active session at test teardown.
+//     patched methods can find it. `screenshotTimeoutMs` caps every
+//     async the capture pipeline awaits — locator resolution, CDP
+//     sends, page.evaluate, page.screenshot. Returns a disposer
+//     that clears the active session at test teardown.
 //
 //   wrapExpect(expect) — wraps Playwright's `expect` so locator
 //     assertions also trigger a highlight screenshot.
@@ -31,9 +33,10 @@ export function startLocatorScreenshotCapture(
   samplePage: Page,
   outputDir: string,
   onScreenshotWritten: (filename: string) => void,
+  screenshotTimeoutMs: number,
 ): () => void {
   ensureLocatorPrototypePatched(samplePage);
-  const session = new ScreenshotCaptureSession(outputDir, onScreenshotWritten);
+  const session = new ScreenshotCaptureSession(outputDir, onScreenshotWritten, screenshotTimeoutMs);
   setActiveCaptureSession(session);
   return () => setActiveCaptureSession(null);
 }

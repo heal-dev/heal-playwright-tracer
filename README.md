@@ -52,7 +52,7 @@ And it's useful for humans in complex test codebases, too!
 npm install -D @heal-dev/heal-playwright-tracer
 ```
 
-Wire the Babel plugin in `playwright.config.ts`.
+Wire the Babel plugin **and** the reporter in `playwright.config.ts`:
 
 ```ts
 // playwright.config.ts
@@ -68,11 +68,19 @@ export default defineConfig({
       ],
     ],
   },
+  reporter: [['@heal-dev/heal-playwright-tracer/reporter']],
 });
 ```
 
-Or, if you prefer to keep the config fully typed, declare the
-option once at the top of the file instead of using `@ts-ignore`:
+Both are required: if you wire the Babel plugin without the
+reporter, the fixture fails fast on the first test of every worker.
+For _why_ the reporter is mandatory (crash rescue, Playwright
+attachment copy, execution-history index), see
+[`docs/configuration.md`](docs/configuration.md#reporter).
+
+If you prefer to keep the config fully typed, declare the
+`babelPlugins` option once at the top of the file instead of using
+`@ts-ignore`:
 
 ```ts
 declare module '@playwright/test' {
@@ -84,19 +92,9 @@ declare module '@playwright/test' {
 }
 ```
 
-Then register the reporter
-
-```ts
-// playwright.config.ts
-export default defineConfig({
-  reporter: [['@heal-dev/heal-playwright-tracer/reporter']],
-  // ...
-});
-```
-
-If you wire the Babel plugin without registering the reporter, the
-fixture fails fast on the first test of every worker with a
-diagnostic pointing back here.
+Per-test output lands at
+`heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`.
+See [Output layout](#output-layout) below for the full tree.
 
 ## Output layout
 
