@@ -77,9 +77,16 @@ import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-pr
 import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
-import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
+import type {
+  HealTracerTestContext,
+  HealTestLifecycle,
+  StatementPreProcessor,
+  StatementPreProcessorContext,
+} from '../heal-config';
 import { withTimeout } from '../../util/with-timeout';
 import { wireAllPages, type WireableSession } from './wire-all-pages';
+import { HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
+import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
 
 // Defaults for the optional `timeouts` block in `HealTracerConfig`.
 // `screenshotMs` caps best-effort decoration calls in the screenshot
@@ -309,6 +316,35 @@ export const test = base.extend<TraceFixtures>({
         });
       }
 
+      // Install per-statement pre-processor chain on `globalThis`. The
+      // Babel plugin emits `await globalThis.__heal_preprocess?.(meta)`
+      // inside every async-context leaf statement; with no
+      // pre-processors registered the slot stays `undefined` and the
+      // optional call is a no-op. With one or more registered, the
+      // installed function loops over them in declaration order and
+      // awaits each. Errors propagate out of the chain (and into the
+      // statement's own try/catch) — a pre-processor that wants to
+      // be defensive about its own failures has to handle them.
+      //
+      // Installed BEFORE lifecycles so a lifecycle's `setup` can
+      // exercise pre-processed code paths if it triggers traced
+      // statements (rare but cleanly defined). Uninstalled AFTER
+      // lifecycle teardowns for the symmetric reason.
+      const preProcessors: StatementPreProcessor[] = tracerConfig.preProcessors ?? [];
+      const preprocessCtx: StatementPreProcessorContext = {
+        ...tracerCtx,
+        browserContext: page.context(),
+      };
+      const g = globalThis as unknown as Record<string, unknown>;
+      const previousPreprocess = g[HEAL_PREPROCESS];
+      if (preProcessors.length > 0) {
+        g[HEAL_PREPROCESS] = async (meta: EnterMeta) => {
+          for (const pp of preProcessors) {
+            await pp({ meta, ctx: preprocessCtx });
+          }
+        };
+      }
+
       // Instantiate user-configured lifecycles for this test. Each
       // factory runs fresh per test so any closure state the factory
       // declares is isolated between tests. Setup failures are
@@ -358,6 +394,14 @@ export const test = base.extend<TraceFixtures>({
           } catch (err) {
             console.error('[heal-playwright-tracer] lifecycle teardown failed:', err);
           }
+        }
+
+        // Uninstall the per-statement pre-processor chain. Restores
+        // whatever was on the slot before this test installed (almost
+        // always `undefined`) so back-to-back tests in the same worker
+        // don't see the prior test's `browserContext` leak.
+        if (preProcessors.length > 0) {
+          g[HEAL_PREPROCESS] = previousPreprocess;
         }
 
         const capturedStdout = stdoutSession.stop();

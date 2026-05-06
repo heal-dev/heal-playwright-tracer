@@ -6,32 +6,35 @@
 
 // heal-playwright-tracer — Babel plugin (code-hook injector)
 //
-// Injects hooks into test source files at statement boundaries. Today
-// the only hook family is the **trace hook**, which wraps every leaf
-// statement in:
+// Injects the **trace hook** into test source files at statement
+// boundaries. Every leaf statement is wrapped in:
 //
 //   {
-//     __enter({ file, startLine, ..., source: "STMT" });
+//     __heal_enter({ file, startLine, ..., source: "STMT" });
 //     let _threw = false;
-//     try { STMT; }
-//     catch (_e) { _threw = true; __throw(_e); throw _e; }
-//     finally { if (!_threw) __ok(vars?); }
+//     try {
+//       await __heal_preprocess?.(meta);   // only inside async functions
+//       STMT;
+//     } catch (_e) { _threw = true; __heal_throw(_e); throw _e; }
+//     finally { if (!_threw) __heal_ok(vars?); }
 //   }
 //
-// The trace-event-recorder (see ./trace-event-recorder.ts) implements
-// those global hooks at runtime — it maintains a stack of active
-// __enter events so depth/parentSeq/duration are derived at pop time.
+// The trace-event-recorder implements __heal_enter/ok/throw at runtime
+// and maintains a stack of active __enter events so depth/parentSeq/
+// duration are derived at pop time.
 //
-// Hook families live under ./hooks/. Today's only family is
-// ./hooks/trace-hook/ — the try/catch/finally wrapper described
-// above. Future hook families (regex-matched Playwright API calls,
-// DOM-setup hooks, etc.) will add new siblings under
-// ./hooks/custom-hooks/ and plug into the same Statement visitor
-// alongside the trace hook.
+// `__heal_preprocess` is the user-extensible seam: consumers register
+// pre-processor functions via `configureTracer({ preProcessors: [...] })`
+// in `playwright.config.ts`, and the fixture installs a single
+// `globalThis.__heal_preprocess` that awaits each in turn. Emitted
+// only when the enclosing function is async — sync statements skip the
+// emit entirely (a statement inside a sync helper can't await).
 //
-// Shared decisions live in the sibling folders of ./hooks/:
+// Sibling folders carry the shared decisions:
+//   - ./trace-hook/           — wrapper builders (try/finally, meta literal)
 //   - ./statement-analysis/   — predicates and classifiers (is this
-//                                a leaf? should it be skipped?)
+//                                a leaf? should it be skipped? is the
+//                                enclosing function async?)
 //   - ./meta-fields/          — extractors for meta-object values
 //                                (source snippet, rel file path,
 //                                enclosing scope label, leading
@@ -77,6 +80,7 @@ import { createCjsArtifactDetector } from '../../domain/code-hook-injector/servi
 import { createLeafStatementClassifier } from '../../domain/code-hook-injector/service/statement-analysis/leaf-statement-classifier';
 import { createNonWrappableStatementPredicate } from '../../domain/code-hook-injector/service/statement-analysis/non-wrappable-statement';
 import { createForHeadDeclarationDetector } from '../../domain/code-hook-injector/service/statement-analysis/for-head-declaration-detector';
+import { createAsyncEnclosingFunctionDetector } from '../../domain/code-hook-injector/service/statement-analysis/async-enclosing-function-detector';
 import { createEnclosingScopeLabeler } from '../../domain/code-hook-injector/service/meta-fields/enclosing-scope-labeler';
 import { extractSource } from '../../domain/code-hook-injector/service/meta-fields/source-snippet-extractor';
 import { extractLeadingComment } from '../../domain/code-hook-injector/service/meta-fields/leading-comment-extractor';
@@ -86,7 +90,8 @@ import { createGlobalTraceCallBuilder } from '../../domain/code-hook-injector/se
 import { createEnterMetaLiteralBuilder } from '../../domain/code-hook-injector/service/trace-hook/enter-meta-literal';
 import { createTryFinallyWrapperBuilder } from '../../domain/code-hook-injector/service/trace-hook/try-finally-wrapper';
 import { createVariableDeclarationHoister } from '../../domain/code-hook-injector/service/trace-hook/variable-declaration-hoister';
-import { HEAL_ENTER } from '../../domain/trace-event-recorder/model/global-names';
+import { createPreprocessCallBuilder } from '../../domain/code-hook-injector/service/trace-hook/preprocess-call';
+import { HEAL_ENTER, HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 
 interface CodeHookInjectorOptions {
   include?: Include;
@@ -113,6 +118,7 @@ function codeHookInjector(
     isGeneratedModuleStatement,
   );
   const isForHeadDeclaration = createForHeadDeclarationDetector(t);
+  const isAsyncEnclosing = createAsyncEnclosingFunctionDetector(t);
   const rewritePlaywrightImports = createPlaywrightImportRewriter(t);
 
   const callStmt = createGlobalTraceCallBuilder(t);
@@ -126,6 +132,7 @@ function codeHookInjector(
   });
   const { buildTryFinally, buildThrewDecl } = createTryFinallyWrapperBuilder(t, callStmt);
   const hoistVariableDeclaration = createVariableDeclarationHoister(t);
+  const buildPreprocessCall = createPreprocessCallBuilder(t);
 
   return {
     name: 'heal-playwright-tracer',
@@ -165,6 +172,17 @@ function codeHookInjector(
 
         const meta = buildMeta(state, stmtPath, node, CWD);
 
+        // Optional pre-processor call inserted at the very start of
+        // the try body. Gated on the enclosing function being async
+        // because the call itself is `await __heal_preprocess?.(meta)`
+        // — a syntax error in sync functions. Sync statements skip
+        // the preprocess phase entirely and are still traced.
+        // `cloneNode(meta)` so the same literal isn't shared between
+        // the __heal_enter call and this one.
+        const preTryStmts: BabelTypes.Statement[] = isAsyncEnclosing(stmtPath)
+          ? [buildPreprocessCall(HEAL_PREPROCESS, t.cloneNode(meta))]
+          : [];
+
         if (t.isVariableDeclaration(node)) {
           // `const x = EXPR` can't be wrapped as-is — the binding
           // would be scoped to the try block and invisible downstream.
@@ -175,7 +193,11 @@ function codeHookInjector(
           const { hoistDecl, assignments, varsObject, bindingNames } =
             hoistVariableDeclaration(node);
           const okArgs = bindingNames.size ? [varsObject] : [];
-          const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, assignments, okArgs);
+          const { threwId, tryStmt } = buildTryFinally(
+            stmtPath.scope,
+            [...preTryStmts, ...assignments],
+            okArgs,
+          );
 
           stmtPath.replaceWithMultiple([
             callStmt(HEAL_ENTER, [meta]),
@@ -190,7 +212,7 @@ function codeHookInjector(
         // original statement inside the try body.
         (node as TracedNode)._traced = true;
 
-        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [node]);
+        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [...preTryStmts, node]);
         const wrapper = t.blockStatement([
           callStmt(HEAL_ENTER, [meta]),
           buildThrewDecl(threwId),

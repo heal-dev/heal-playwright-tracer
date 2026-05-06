@@ -23,14 +23,22 @@
 //                    trace is finalized). Factories — not singleton
 //                    objects — because per-test instantiation keeps
 //                    any closure state isolated between tests.
+//   - `preProcessors` — per-statement async hooks. Each entry is a
+//                    `StatementPreProcessor` function awaited before
+//                    every traced leaf statement (in async contexts).
+//                    Use this to run side effects that must complete
+//                    before Playwright resolves the next locator —
+//                    e.g. DOM stamping, selector resolution, paint
+//                    of overlays. Plain functions, no factory.
 //
-// The design is deliberately narrow: two arrays, no plugin discovery,
-// no magic globals. Anything fancier is the user's
+// The design is deliberately narrow: a few arrays, no plugin
+// discovery, no magic globals. Anything fancier is the user's
 // `playwright.config.ts` to write.
 
-import type { Request as PwRequest, TestInfo } from '@playwright/test';
+import type { BrowserContext, Request as PwRequest, TestInfo } from '@playwright/test';
 import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/heal-trace-exporter';
 import type { ConsoleLevel } from '../../domain/trace-event-recorder/model/console-trace-schema';
+import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
 
 /**
  * Everything the fixture hands to a exporter or lifecycle factory
@@ -114,6 +122,47 @@ export interface HealTestLifecycle {
  * two-injection design would create.
  */
 export type HealTestLifecycleFactory = () => HealTestLifecycle;
+
+/**
+ * Context passed to a `StatementPreProcessor` on every call. Extends
+ * `HealTracerTestContext` with the live `browserContext` for the
+ * current test so a pre-processor can read pages, evaluate scripts,
+ * stamp DOM, etc. before the user's statement runs.
+ *
+ * `browserContext` is the same object Playwright passes to the test —
+ * pre-processors share it with the test body, so any mutation the
+ * pre-processor makes is visible to the statement that follows.
+ */
+export interface StatementPreProcessorContext extends HealTracerTestContext {
+  browserContext: BrowserContext;
+}
+
+/**
+ * Async function called once per traced leaf statement, before the
+ * statement body runs. The Babel plugin emits
+ * `await globalThis.__heal_preprocess?.(meta)` inside the try block;
+ * the fixture installs a single global that loops over every
+ * registered pre-processor in declaration order and awaits each.
+ *
+ * Async-context only: the emit is gated on the enclosing function
+ * being `async`. Statements inside synchronous helpers skip the
+ * pre-processor chain entirely (we cannot `await` from a sync
+ * function).
+ *
+ * Errors thrown by a pre-processor are caught by the statement's own
+ * try/catch — they will be reported as a `__heal_throw` for the
+ * statement, NOT swallowed silently. Pre-processors should therefore
+ * be defensive about their own internal failures (try/catch, log,
+ * return) when a partial side-effect is acceptable.
+ *
+ * Plain function — no class, no factory, no setup/teardown. Bind a
+ * method if you need instance state; or close over module-scoped
+ * state in `playwright.config.ts`.
+ */
+export type StatementPreProcessor = (input: {
+  meta: EnterMeta;
+  ctx: StatementPreProcessorContext;
+}) => void | Promise<void>;
 
 /**
  * Caps applied to async work the tracer wraps around the user's
@@ -234,6 +283,14 @@ export interface HealTracerConsoleConfig {
 export interface HealTracerConfig {
   exporters?: HealTraceExporterFactory[];
   lifecycles?: HealTestLifecycleFactory[];
+  /**
+   * Per-statement async hooks. Each function in this array is awaited
+   * before the user's statement runs (gated on the enclosing function
+   * being `async`). Useful for pre-execution side-effects that must
+   * complete before Playwright resolves a locator — e.g. stamping the
+   * DOM with attributes a custom selector strategy depends on.
+   */
+  preProcessors?: StatementPreProcessor[];
   timeouts?: HealTracerTimeouts;
   network?: HealTracerNetworkConfig;
   console?: HealTracerConsoleConfig;

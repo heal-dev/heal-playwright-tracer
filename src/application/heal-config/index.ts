@@ -23,6 +23,8 @@ export type {
   HealTraceExporterFactory,
   HealTestLifecycle,
   HealTestLifecycleFactory,
+  StatementPreProcessor,
+  StatementPreProcessorContext,
   HealTracerNetworkConfig,
   HealTracerNetworkBodyMode,
   HealTracerConsoleConfig,

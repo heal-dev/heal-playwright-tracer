@@ -23,6 +23,8 @@ export type {
   HealTraceExporterFactory,
   HealTestLifecycle,
   HealTestLifecycleFactory,
+  StatementPreProcessor,
+  StatementPreProcessorContext,
 } from './application/heal-config';
 
 // Re-export the HealTraceExporter port and the record type it consumes,

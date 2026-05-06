@@ -32,6 +32,23 @@ describe('heal-config registry', () => {
     expect(getTracerConfig()).toEqual({});
   });
 
+  it('configureTracer round-trips preProcessors as plain functions', () => {
+    // Pre-processors are plain async functions (no factory layer).
+    // Registering them via configureTracer must surface them
+    // identity-equal in getTracerConfig — the fixture composes the
+    // registered array into a single `globalThis.__heal_preprocess`,
+    // so any wrapping or copying here would break that contract.
+    const pp1 = async () => {};
+    const pp2 = async () => {};
+    configureTracer({ preProcessors: [pp1, pp2] });
+
+    const cfg = getTracerConfig();
+    expect(cfg.preProcessors).toBeDefined();
+    expect(cfg.preProcessors).toHaveLength(2);
+    expect(cfg.preProcessors![0]).toBe(pp1);
+    expect(cfg.preProcessors![1]).toBe(pp2);
+  });
+
   describe('teardown hooks', () => {
     it('onTestTeardown + drainTeardownHooks runs hooks in registration order', async () => {
       const calls: number[] = [];
