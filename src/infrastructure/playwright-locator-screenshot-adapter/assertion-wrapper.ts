@@ -36,7 +36,6 @@
 // `expect(page).toHaveURL(...)`) fall through untouched.
 
 import type { Locator, Page } from 'playwright';
-import { removeOverlay } from './overlay-helpers';
 import { getActiveCaptureSession } from './locator-patch';
 
 // Duck-type: a Playwright Locator always has both `.boundingBox` and
@@ -73,11 +72,11 @@ function wrapAssertion<T extends object>(assertion: T, locator: Locator): T {
             typeof (locator as { page?: () => Page }).page === 'function'
               ? (locator as { page: () => Page }).page()
               : null;
-          let drawnNodeId: string | null = null;
+          let cleanup: (() => Promise<void>) | null = null;
           const session = getActiveCaptureSession();
           if (page && session) {
             try {
-              drawnNodeId = await session.captureWithHighlight(page, locator, `assert-${prop}`);
+              cleanup = await session.captureWithHighlight(page, locator, `assert-${prop}`);
             } catch (_) {
               // Capture is best-effort: never block the assertion.
             }
@@ -85,11 +84,12 @@ function wrapAssertion<T extends object>(assertion: T, locator: Locator): T {
           try {
             return await (value as (...a: unknown[]) => unknown).apply(target, args);
           } finally {
-            if (drawnNodeId && page) {
+            if (cleanup) {
               try {
-                await removeOverlay(page, drawnNodeId);
+                await cleanup();
               } catch (_) {
-                // Page gone — nothing to clean.
+                // Cleanup is already capped via withTimeout inside
+                // the session.
               }
             }
           }

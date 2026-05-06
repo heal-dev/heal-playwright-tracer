@@ -28,7 +28,6 @@
 
 import type { Page } from 'playwright';
 import type { ScreenshotCaptureSession } from './screenshot-capture-session';
-import { removeOverlay } from './overlay-helpers';
 
 // Locator action methods that will be highlighted and screenshotted.
 // User-facing actions only — not queries, not waits, not assertions.
@@ -97,16 +96,18 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
       };
       const pg = typeof self.page === 'function' ? self.page() : null;
       const session = activeSession;
-      const drawnNodeId = pg && session ? await session.captureWithHighlight(pg, self, name) : null;
+      const cleanup = pg && session ? await session.captureWithHighlight(pg, self, name) : null;
 
       try {
         return await (orig as (...a: unknown[]) => Promise<unknown>).apply(self, args);
       } finally {
-        if (drawnNodeId && pg) {
+        if (cleanup) {
           try {
-            await removeOverlay(pg, drawnNodeId);
+            await cleanup();
           } catch (_) {
-            // Page closed / navigated / element detached — nothing to clean.
+            // Cleanup is already wrapped in withTimeout inside the
+            // session; a rejection here means the page closed,
+            // navigated, or the renderer wedged past the cap.
           }
         }
       }

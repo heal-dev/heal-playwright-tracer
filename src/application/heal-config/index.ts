@@ -18,6 +18,7 @@ export { resetTeardownHooks, drainTeardownHooks } from './registry';
 
 export type {
   HealTracerConfig,
+  HealTracerTimeouts,
   HealTracerTestContext,
   HealTraceExporterFactory,
   HealTestLifecycle,

@@ -44,6 +44,72 @@ The plugin also rewrites `from '@playwright/test'` to
 so `test` and `expect` automatically resolve to the traced variants —
 no manual import swap required.
 
+## Locator-action highlight screenshots
+
+Every patched locator action (and locator-targeted assertion) takes a
+highlight screenshot before the action runs. How the highlight is
+drawn depends on the browser:
+
+- **Chromium**: drawn natively via CDP `Overlay.highlightNode`. The
+  renderer composes the highlight at rasterize time using the
+  element's _current_ layout box, so the highlight cannot drift if
+  the page reflows between locator resolution and screenshot.
+  Visually, the element is tinted with a translucent magenta fill
+  (`contentColor: rgba(255, 0, 255, 0.25)`) — not a hollow border.
+- **Firefox / WebKit**: no CDP, so we fall back to a JS canvas
+  overlay (`overlay-helpers.ts`). Coordinates come from
+  `locator.boundingBox()`. `boundingBox()` does not wait for
+  actionability/stability the way Playwright's actions do, so on
+  pages with late layout shifts (lazy images, font swaps, deferred
+  hydration above the target) the captured coords can be stale by
+  the time the screenshot is taken — the box ends up framing empty
+  space where the element used to be. This is a known limitation of
+  the fallback path.
+
+The CDP path also handles `boundingBox()`-failure cases (e.g. a
+detached stash node) by falling back to the JS overlay reusing the
+same per-statement sequence number, so screenshots remain numbered
+contiguously.
+
+Both paths cap their per-call locator measurements at 1 second
+(`boundingBox` for the JS fallback; `locator.evaluate` for the CDP
+stash/unstash). The same 1-second cap is applied to every CDP
+`send`, to `newCDPSession`, to the `page.screenshot` fallback, and
+to the `page.evaluate` calls inside `drawOverlay` / `removeOverlay`.
+Without these caps, Playwright auto-waits the locator-resolution
+calls for the full configured `actionTimeout`, and CDP itself has
+no protocol-level timeout — a wedged renderer (alert dialog, JS
+deadlock, hung navigation) could otherwise let screenshot
+decoration outlast the action it is decorating. Decoration must
+always fail-fast so the test fails on the user's actual action,
+not on the tracer's overlay.
+
+## Tuning timeouts
+
+Two optional knobs on `configureTracer({ timeouts })`:
+
+```ts
+configureTracer({
+  timeouts: {
+    screenshotMs: 1000, // default — caps screenshot decoration calls
+    lifecycleMs: 30_000, // default — caps user setup/teardown and projector.finalize
+  },
+});
+```
+
+- `screenshotMs` covers everything described above
+  (`boundingBox`, `locator.evaluate`, every CDP send, `newCDPSession`,
+  `page.screenshot`, overlay `page.evaluate`).
+- `lifecycleMs` covers each `lifecycle.setup` / `lifecycle.teardown`
+  pair, the drained `onTestTeardown` hook chain, and the final
+  `projector.finalize` (which closes every registered exporter). On
+  timeout the fixture logs to stderr and continues with the next
+  teardown step — the test result is preserved even if a
+  user-registered exporter's `close()` hangs.
+
+Both fields are optional; omit the `timeouts` block entirely to keep
+the defaults.
+
 ## Why CommonJS?
 
 The package ships as CommonJS (no `"type": "module"` in
