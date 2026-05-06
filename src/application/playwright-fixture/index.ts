@@ -79,7 +79,7 @@ import { withTimeout } from '../../util/with-timeout';
 // projector close. On `lifecycleMs` timeouts the fixture logs to
 // stderr and continues the rest of teardown — a hung user exporter
 // must not block the next test from starting.
-const DEFAULT_SCREENSHOT_TIMEOUT_MS = 1000;
+const DEFAULT_SCREENSHOT_TIMEOUT_MS = 10_000;
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 30_000;
 
 // Wrap `expect` so any assertion made against a Locator gets a

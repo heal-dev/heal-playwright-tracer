@@ -32,6 +32,14 @@ import type { ScreenshotCaptureSession } from './screenshot-capture-session';
 // Locator action methods that will be highlighted and screenshotted.
 // User-facing actions only — not queries, not waits, not assertions.
 // If Playwright adds new action methods, append them here.
+//
+// Deliberately excluded: `scrollIntoViewIfNeeded`. The capture
+// pipeline calls `target.scrollIntoViewIfNeeded()` itself before
+// every action screenshot (so off-viewport targets aren't framing
+// empty space); patching it here would cause infinite recursion
+// when our own pre-screenshot scroll re-entered the patched method.
+// The standalone scroll-action screenshot is also redundant given
+// every other action now scrolls-then-screenshots anyway.
 export const HIGHLIGHTED_LOCATOR_ACTIONS = [
   'click',
   'dblclick',
@@ -51,7 +59,6 @@ export const HIGHLIGHTED_LOCATOR_ACTIONS = [
   'selectText',
   'setInputFiles',
   'dragTo',
-  'scrollIntoViewIfNeeded',
 ];
 
 const PATCHED = Symbol.for('heal-playwright-tracer.locator-patched');
@@ -96,7 +103,10 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
       };
       const pg = typeof self.page === 'function' ? self.page() : null;
       const session = activeSession;
-      const cleanup = pg && session ? await session.captureWithHighlight(pg, self, name) : null;
+      const cleanup =
+        pg && session
+          ? await session.captureWithHighlight(pg, self, name, { mode: 'action' })
+          : null;
 
       try {
         return await (orig as (...a: unknown[]) => Promise<unknown>).apply(self, args);

@@ -76,7 +76,9 @@ function wrapAssertion<T extends object>(assertion: T, locator: Locator): T {
           const session = getActiveCaptureSession();
           if (page && session) {
             try {
-              cleanup = await session.captureWithHighlight(page, locator, `assert-${prop}`);
+              cleanup = await session.captureWithHighlight(page, locator, `assert-${prop}`, {
+                mode: 'assertion',
+              });
             } catch (_) {
               // Capture is best-effort: never block the assertion.
             }

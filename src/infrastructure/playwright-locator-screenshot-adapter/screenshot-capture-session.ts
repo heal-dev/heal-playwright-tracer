@@ -47,6 +47,7 @@ interface CapturableTarget {
     arg: A,
     options?: { timeout?: number },
   ) => Promise<R>;
+  scrollIntoViewIfNeeded?: (options?: { timeout?: number }) => Promise<void>;
 }
 
 type EvaluatableTarget = CapturableTarget & {
@@ -57,13 +58,26 @@ function hasEvaluate(target: CapturableTarget): target is EvaluatableTarget {
   return typeof target.evaluate === 'function';
 }
 
-// CDP HighlightConfig — translucent magenta over the element's
-// content box; padding/border/margin regions stay transparent so the
-// highlight reads as a single fill rather than a DevTools-style box
-// model breakdown. `showInfo`/`showRulers`/`showExtensionLines` off
-// for the same reason.
+// 'action' — Playwright's actions auto-scroll the target into view as
+//   part of actionability. We mirror that here so the screenshot
+//   matches what the user will see when the action runs.
+// 'assertion' — locator assertions (`toBeVisible`, `toBeInViewport`,
+//   etc.) do NOT auto-scroll, and viewport-sensitive assertions would
+//   change outcome if we did. We capture beyond the viewport instead
+//   so off-viewport targets are still visible in the screenshot.
+export type CaptureMode = 'action' | 'assertion';
+
+// CDP HighlightConfig — near-invisible magenta tint over the
+// element's content box. `Overlay.highlightNode` is a fill-based
+// primitive (no native outline mode), so we drop the alpha to ~0.08
+// to keep the highlight reading visually as a border-only frame
+// while preserving the rasterize-time composition that gives the
+// CDP path its layout-shift immunity. Padding/border/margin
+// regions stay fully transparent. `showInfo`/`showRulers`/
+// `showExtensionLines` off — we don't want the DevTools-style
+// breakdown labels.
 const HIGHLIGHT_CONFIG = {
-  contentColor: { r: 255, g: 0, b: 255, a: 0.25 },
+  contentColor: { r: 255, g: 0, b: 255, a: 0.08 },
   paddingColor: { r: 0, g: 0, b: 0, a: 0 },
   borderColor: { r: 0, g: 0, b: 0, a: 0 },
   marginColor: { r: 0, g: 0, b: 0, a: 0 },
@@ -107,7 +121,18 @@ export class ScreenshotCaptureSession {
     page: Page,
     target: CapturableTarget,
     actionName: string,
+    options: { mode: CaptureMode },
   ): Promise<(() => Promise<void>) | null> {
+    if (options.mode === 'action' && typeof target.scrollIntoViewIfNeeded === 'function') {
+      try {
+        await target.scrollIntoViewIfNeeded({ timeout: this.screenshotTimeoutMs });
+      } catch (_) {
+        // Best-effort. If this fails, the existing measure-or-fallback
+        // path handles missing/detached targets.
+      }
+    }
+
+    const fullPage = options.mode === 'assertion';
     const cdp = await this.getCDPSession(page);
 
     if (cdp && hasEvaluate(target)) {
@@ -115,18 +140,18 @@ export class ScreenshotCaptureSession {
       const filename = `highlight-${seq}-${actionName}.png`;
       const fullPath = path.join(this.outputDir, filename);
       try {
-        await this.captureViaCdpHighlight(cdp, target, seq, fullPath);
+        await this.captureViaCdpHighlight(cdp, target, seq, fullPath, fullPage);
         this.onScreenshotWritten(filename);
         return null;
       } catch (_) {
         // CDP path failed mid-flight — drop down to the JS overlay
         // with the seq we already burned to keep numbering stable
         // and reuse the same filename.
-        return this.captureViaJsOverlayReusingSeq(page, target, seq, fullPath, filename);
+        return this.captureViaJsOverlayReusingSeq(page, target, seq, fullPath, filename, fullPage);
       }
     }
 
-    return this.captureViaJsOverlay(page, target, actionName);
+    return this.captureViaJsOverlay(page, target, actionName, fullPage);
   }
 
   private async captureViaCdpHighlight(
@@ -134,6 +159,7 @@ export class ScreenshotCaptureSession {
     target: EvaluatableTarget,
     seq: number,
     fullPath: string,
+    fullPage: boolean,
   ): Promise<void> {
     const stashKey = `seq_${seq}`;
 
@@ -177,9 +203,11 @@ export class ScreenshotCaptureSession {
         nodeId,
       });
       try {
-        const shotResp = (await this.cdpSend(cdp, 'Page.captureScreenshot', {
-          format: 'png',
-        })) as { data: string };
+        const screenshotParams: Record<string, unknown> = { format: 'png' };
+        if (fullPage) screenshotParams.captureBeyondViewport = true;
+        const shotResp = (await this.cdpSend(cdp, 'Page.captureScreenshot', screenshotParams)) as {
+          data: string;
+        };
         await fs.promises.writeFile(fullPath, Buffer.from(shotResp.data, 'base64'));
       } finally {
         try {
@@ -220,6 +248,7 @@ export class ScreenshotCaptureSession {
     page: Page,
     target: CapturableTarget,
     actionName: string,
+    fullPage: boolean,
   ): Promise<(() => Promise<void>) | null> {
     const box = await this.measureBox(target);
     if (!box) return null;
@@ -227,7 +256,7 @@ export class ScreenshotCaptureSession {
     const seq = ++this.seq;
     const filename = `highlight-${seq}-${actionName}.png`;
     const fullPath = path.join(this.outputDir, filename);
-    return this.drawAndScreenshotJs(page, seq, box, filename, fullPath);
+    return this.drawAndScreenshotJs(page, seq, box, filename, fullPath, fullPage);
   }
 
   // Used when the CDP path failed *after* `seq` was already
@@ -240,10 +269,11 @@ export class ScreenshotCaptureSession {
     seq: number,
     fullPath: string,
     filename: string,
+    fullPage: boolean,
   ): Promise<(() => Promise<void>) | null> {
     const box = await this.measureBox(target);
     if (!box) return null;
-    return this.drawAndScreenshotJs(page, seq, box, filename, fullPath);
+    return this.drawAndScreenshotJs(page, seq, box, filename, fullPath, fullPage);
   }
 
   private async measureBox(target: CapturableTarget): Promise<Box | null> {
@@ -261,6 +291,7 @@ export class ScreenshotCaptureSession {
     box: Box,
     filename: string,
     fullPath: string,
+    fullPage: boolean,
   ): Promise<(() => Promise<void>) | null> {
     const nodeId = `_heal_draw_area_tracer_${seq}`;
     try {
@@ -269,7 +300,7 @@ export class ScreenshotCaptureSession {
       return null;
     }
     try {
-      await this.takeScreenshot(page, fullPath);
+      await this.takeScreenshot(page, fullPath, fullPage);
       this.onScreenshotWritten(filename);
     } catch (_) {
       // Overlay drawn; the cleanup closure below still removes it.
@@ -277,16 +308,18 @@ export class ScreenshotCaptureSession {
     return () => removeOverlay(page, nodeId, this.screenshotTimeoutMs);
   }
 
-  private async takeScreenshot(page: Page, fullPath: string): Promise<void> {
+  private async takeScreenshot(page: Page, fullPath: string, fullPage: boolean): Promise<void> {
     const cdp = await this.getCDPSession(page);
     if (cdp) {
-      const shotResp = (await this.cdpSend(cdp, 'Page.captureScreenshot', {
-        format: 'png',
-      })) as { data: string };
+      const screenshotParams: Record<string, unknown> = { format: 'png' };
+      if (fullPage) screenshotParams.captureBeyondViewport = true;
+      const shotResp = (await this.cdpSend(cdp, 'Page.captureScreenshot', screenshotParams)) as {
+        data: string;
+      };
       await fs.promises.writeFile(fullPath, Buffer.from(shotResp.data, 'base64'));
       return;
     }
-    await page.screenshot({ path: fullPath, timeout: this.screenshotTimeoutMs });
+    await page.screenshot({ path: fullPath, timeout: this.screenshotTimeoutMs, fullPage });
   }
 
   // Promise.race wrapper around `cdp.send`. CDP itself has no

@@ -130,7 +130,7 @@ export interface HealTracerTimeouts {
    * `Page.captureScreenshot`, `Runtime.*`), `newCDPSession`, and
    * the `page.screenshot` fallback. Capture is best-effort: on
    * timeout the screenshot is dropped and the action proceeds.
-   * Default: 1000ms.
+   * Default: 10_000ms.
    */
   screenshotMs?: number;
   /**

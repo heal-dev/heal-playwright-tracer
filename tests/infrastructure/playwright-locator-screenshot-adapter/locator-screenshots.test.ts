@@ -277,6 +277,106 @@ describe('locator-screenshots', () => {
 
     expect(recordedOptions).toEqual([{ timeout: 1000 }]);
   });
+
+  it('scrolls the target into view before capture on the action path', async () => {
+    // Off-viewport elements would otherwise produce screenshots
+    // framing empty space. Playwright actions auto-scroll anyway, so
+    // doing it here is a no-op for the action's own state and just
+    // ensures our screenshot matches what the action will see.
+    const { fakePage, FakeLocator, log } = makeFakePageAndLocatorClass();
+    const scrollOpts: unknown[] = [];
+    (
+      FakeLocator.prototype as unknown as {
+        scrollIntoViewIfNeeded: (o?: unknown) => Promise<void>;
+      }
+    ).scrollIntoViewIfNeeded = async function (options?: unknown) {
+      scrollOpts.push(options);
+      log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [options] });
+    };
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const loc = new FakeLocator();
+    await loc.click();
+
+    // Scroll happens before any other capture step.
+    expect(log.map((c) => c.name)).toEqual([
+      'locator.scrollIntoViewIfNeeded',
+      'locator.boundingBox',
+      'page.evaluate', // draw overlay
+      'page.screenshot',
+      'locator.click',
+      'page.evaluate', // remove overlay
+    ]);
+    expect(scrollOpts).toEqual([{ timeout: 1000 }]);
+  });
+
+  it('does not pass fullPage:true to page.screenshot on the action JS-fallback path', async () => {
+    // Symmetric to the assertion-path test below. Action mode
+    // already scrolled the target into view, so a viewport capture
+    // is sufficient. Forcing fullPage here would inflate every
+    // action screenshot for no benefit.
+    const { fakePage, FakeLocator, log } = makeFakePageAndLocatorClass();
+    (fakePage as unknown as { context: () => unknown }).context = () => ({
+      newCDPSession: vi.fn().mockRejectedValue(new Error('CDP not supported')),
+    });
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const loc = new FakeLocator();
+    await loc.click();
+
+    const shotCall = log.find((c) => c.name === 'page.screenshot');
+    expect(shotCall).toBeDefined();
+    expect((shotCall!.args[0] as { fullPage?: boolean }).fullPage).not.toBe(true);
+  });
+
+  it('does not patch scrollIntoViewIfNeeded — calling it directly takes no screenshot', async () => {
+    // `scrollIntoViewIfNeeded` is intentionally excluded from
+    // HIGHLIGHTED_LOCATOR_ACTIONS because the capture pipeline
+    // calls it itself before every action screenshot. Re-adding
+    // it would cause infinite recursion (our pre-screenshot
+    // scroll re-entering the patched method). This test pins
+    // that contract.
+    const { fakePage, FakeLocator, log, screenshotPaths } = makeFakePageAndLocatorClass();
+    (
+      FakeLocator.prototype as unknown as {
+        scrollIntoViewIfNeeded: () => Promise<void>;
+      }
+    ).scrollIntoViewIfNeeded = async function () {
+      log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
+    };
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const loc = new FakeLocator();
+    await (
+      loc as unknown as { scrollIntoViewIfNeeded: () => Promise<void> }
+    ).scrollIntoViewIfNeeded();
+
+    expect(log.map((c) => c.name)).toEqual(['locator.scrollIntoViewIfNeeded']);
+    expect(screenshotPaths).toEqual([]);
+    expect(mockSetScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('does not abort capture when scrollIntoViewIfNeeded rejects', async () => {
+    const { fakePage, FakeLocator, log, screenshotPaths } = makeFakePageAndLocatorClass();
+    (
+      FakeLocator.prototype as unknown as {
+        scrollIntoViewIfNeeded: (o?: unknown) => Promise<void>;
+      }
+    ).scrollIntoViewIfNeeded = async function () {
+      log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
+      throw new Error('detached');
+    };
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const loc = new FakeLocator();
+    const result = await loc.click();
+
+    expect(result).toBe('clicked');
+    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-click.png']);
+    // Scroll attempted, then capture continued normally.
+    expect(log[0].name).toBe('locator.scrollIntoViewIfNeeded');
+    expect(log.some((c) => c.name === 'page.screenshot')).toBe(true);
+  });
 });
 
 // --- CDP highlight path ---------------------------------------------------
@@ -411,7 +511,7 @@ describe('locator-screenshots — CDP highlight path', () => {
       nodeId: number;
     };
     expect(params.nodeId).toBe(42);
-    expect(params.highlightConfig.contentColor).toEqual({ r: 255, g: 0, b: 255, a: 0.25 });
+    expect(params.highlightConfig.contentColor).toEqual({ r: 255, g: 0, b: 255, a: 0.08 });
     expect(params.highlightConfig.showInfo).toBe(false);
 
     writeFileSpy.mockRestore();
@@ -503,6 +603,24 @@ describe('locator-screenshots — CDP highlight path', () => {
 
     // Both stash and unstash carry the timeout cap.
     expect(recordedOpts).toEqual([{ timeout: 1000 }, { timeout: 1000 }]);
+
+    writeFileSpy.mockRestore();
+  });
+
+  it('captures viewport-only on the action path (no captureBeyondViewport)', async () => {
+    // Action path scrolls the target into view, so a viewport
+    // screenshot is sufficient and keeps the PNG small.
+    const { fakePage, FakeLocator, sendCalls, sendResponses } = makeCdpFakePageAndLocatorClass();
+    installCdpHappyPath(sendResponses, Buffer.from('').toString('base64'));
+    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
+
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    const loc = new FakeLocator();
+    await loc.click();
+
+    const shotCall = sendCalls.find((c) => c.command === 'Page.captureScreenshot');
+    expect(shotCall).toBeDefined();
+    expect(shotCall!.params).toEqual({ format: 'png' });
 
     writeFileSpy.mockRestore();
   });
@@ -734,5 +852,73 @@ describe('wrapExpect — locator assertion screenshots', () => {
 
     expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-assert-toBeVisible.png']);
     expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-assert-toBeVisible.png');
+  });
+
+  it('does not scroll the target before an assertion screenshot, even when scrollIntoViewIfNeeded exists', async () => {
+    // Locator assertions like `toBeInViewport` would change outcome
+    // if the tracer scrolled before they ran. The assertion path
+    // captures beyond the viewport instead.
+    const { fakePage, locator, log } = makeFakeLocatorInstance();
+    (locator as { scrollIntoViewIfNeeded?: () => Promise<void> }).scrollIntoViewIfNeeded =
+      async function () {
+        log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
+      };
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
+    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
+    await (assertion.toBeVisible as () => Promise<unknown>)();
+
+    expect(log.some((c) => c.name === 'locator.scrollIntoViewIfNeeded')).toBe(false);
+  });
+
+  it('passes fullPage: true to page.screenshot on the assertion JS-fallback path', async () => {
+    // Off-viewport assertion targets must still appear in the
+    // screenshot. Without CDP, the only way to capture beyond the
+    // viewport is `fullPage: true`.
+    const { fakePage, locator, log } = makeFakeLocatorInstance();
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
+    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
+    await (assertion.toBeVisible as () => Promise<unknown>)();
+
+    const shotCall = log.find((c) => c.name === 'page.screenshot');
+    expect(shotCall).toBeDefined();
+    expect((shotCall!.args[0] as { fullPage?: boolean }).fullPage).toBe(true);
+  });
+
+  it('passes captureBeyondViewport: true to CDP Page.captureScreenshot on the assertion CDP path', async () => {
+    // CDP equivalent of the JS-fallback fullPage flag: rasterizes
+    // the full document so off-viewport targets still appear.
+    const { fakePage, locator, log } = makeFakeLocatorInstance();
+    const sendCalls: CdpCallRecord[] = [];
+    const pngBase64 = Buffer.from('fake-png').toString('base64');
+    const sendMock = vi.fn(async (command: string, params: unknown) => {
+      sendCalls.push({ command, params });
+      if (command === 'Page.captureScreenshot') return { data: pngBase64 };
+      return {};
+    });
+    (fakePage as unknown as { context: () => unknown }).context = () => ({
+      newCDPSession: vi.fn().mockResolvedValue({ send: sendMock, detach: vi.fn() }),
+    });
+    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
+
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
+    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
+    await (assertion.toBeVisible as () => Promise<unknown>)();
+
+    // Locator has no `evaluate`, so we go through the JS overlay
+    // path but the screenshot itself still goes through CDP. It
+    // must carry captureBeyondViewport.
+    const shot = sendCalls.find((c) => c.command === 'Page.captureScreenshot');
+    expect(shot).toBeDefined();
+    expect(shot!.params).toEqual({ format: 'png', captureBeyondViewport: true });
+    // page.screenshot fallback was bypassed on the screenshot step
+    // because CDP was available.
+    expect(log.some((c) => c.name === 'page.screenshot')).toBe(false);
+
+    writeFileSpy.mockRestore();
   });
 });

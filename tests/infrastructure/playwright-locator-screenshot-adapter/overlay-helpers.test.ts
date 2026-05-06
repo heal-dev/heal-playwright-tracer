@@ -20,7 +20,7 @@ function fakePage(): FakePage {
 }
 
 describe('overlay-helpers', () => {
-  it('drawOverlay calls page.evaluate with nodeId, box, border size, and color', async () => {
+  it('drawOverlay calls page.evaluate with nodeId, box, border size, and colors', async () => {
     const page = fakePage();
     const box = { x: 10, y: 20, width: 30, height: 40 };
 
@@ -33,11 +33,12 @@ describe('overlay-helpers', () => {
       nodeId: 'heal-overlay-1',
       box,
       borderSize: 4,
-      color: 'magenta',
+      borderColor: 'magenta',
+      fillColor: 'rgba(255, 0, 255, 0.08)',
     });
   });
 
-  it('drawOverlay payload function builds a canvas positioned at the box coordinates', async () => {
+  it('drawOverlay payload function builds a div positioned at the box coordinates with a translucent fill', async () => {
     const page = fakePage();
     const box = { x: 100, y: 200, width: 50, height: 60 };
 
@@ -50,7 +51,8 @@ describe('overlay-helpers', () => {
         nodeId: string;
         box: { x: number; y: number; width: number; height: number };
         borderSize: number;
-        color: string;
+        borderColor: string;
+        fillColor: string;
       }) => void,
       unknown,
     ];
@@ -73,19 +75,27 @@ describe('overlay-helpers', () => {
     (globalThis as unknown as { document: unknown }).document = fakeDocument;
     (globalThis as unknown as { window: unknown }).window = fakeWindow;
     try {
-      drawFn({ nodeId: 'id-1', box, borderSize: 4, color: 'magenta' });
+      drawFn({
+        nodeId: 'id-1',
+        box,
+        borderSize: 4,
+        borderColor: 'magenta',
+        fillColor: 'rgba(255, 0, 255, 0.08)',
+      });
     } finally {
       (globalThis as unknown as { document?: unknown }).document = origDoc;
       (globalThis as unknown as { window?: unknown }).window = origWin;
     }
 
-    expect(fakeDocument.createElement).toHaveBeenCalledWith('canvas');
+    expect(fakeDocument.createElement).toHaveBeenCalledWith('div');
     expect(node.id).toBe('id-1');
     expect(style.left).toBe('105px');
     expect(style.top).toBe('207px');
     expect(style.width).toBe('50px');
     expect(style.height).toBe('60px');
     expect(style.border).toBe('4px solid magenta');
+    expect(style.backgroundColor).toBe('rgba(255, 0, 255, 0.08)');
+    expect(style.boxSizing).toBe('border-box');
     expect(style.pointerEvents).toBe('none');
     expect(style.position).toBe('absolute');
     expect(appended).toEqual([node]);
