@@ -57,6 +57,28 @@ import { withTimeout } from '../../util/with-timeout';
 const DEFAULT_MAX_BODY_BYTES = 8192;
 const BODY_READ_TIMEOUT_MS = 2000;
 
+/**
+ * Public HTTP methods on `APIRequestContext` that we patch to capture
+ * runner-side traffic. `fetch` is the unified entry point; the others
+ * are convenience methods that may or may not delegate to it depending
+ * on Playwright's version, so we patch all of them.
+ */
+const API_METHODS: readonly string[] = Object.freeze([
+  'fetch',
+  'get',
+  'post',
+  'put',
+  'patch',
+  'delete',
+  'head',
+]);
+
+interface ApiPatch {
+  target: Record<string, unknown>;
+  method: string;
+  original: (...args: unknown[]) => Promise<unknown>;
+}
+
 export interface NetworkCaptureDeps {
   clock: Clock;
   startedAt: number;
@@ -74,6 +96,8 @@ export class NetworkCaptureSession {
   private closed = false;
   private readonly contexts = new WeakSet<BrowserContext>();
   private readonly apiContexts = new WeakSet<APIRequestContext>();
+  private readonly apiPatches: ApiPatch[] = [];
+  private apiCounter = 1;
   private readonly coalescer = new NetworkCoalescer();
   private readonly bufferedBodies = new Map<string, BufferedBodies>();
   private readonly bodyMode: HealTracerNetworkBodyMode;
@@ -108,21 +132,120 @@ export class NetworkCaptureSession {
   attachToApiRequestContext(api: APIRequestContext): void {
     if (this.closed || this.apiContexts.has(api)) return;
     this.apiContexts.add(api);
-    // APIRequestContext exposes the same event names as BrowserContext.
-    // The cast keeps us decoupled from the typing differences between
-    // PW versions for these subscribe-only paths.
-    const emitter = api as unknown as {
-      on: (
-        event: 'request' | 'response' | 'requestfinished' | 'requestfailed',
-        listener: (arg: PwRequest | PwResponse) => void,
-      ) => void;
+    // `APIRequestContext` does NOT expose public `request`/`response`
+    // events the way BrowserContext does — the event surface is
+    // browser-side only. To capture runner-side `request.get(...)`
+    // traffic we patch the public HTTP methods on the instance,
+    // synthesize a `NetworkRecord` per call, and write it directly.
+    // No coalescer / redirect tracking — the Playwright fetch
+    // internally follows redirects and only surfaces the final
+    // `APIResponse`, so a single record per call is correct.
+    //
+    // Patches are reverted in `stop()` (api contexts are usually
+    // worker-scoped, so a stale patch would leak into the next test
+    // in the same worker).
+    const patchTarget = api as unknown as Record<string, unknown>;
+    for (const method of API_METHODS) {
+      const original = patchTarget[method];
+      if (typeof original !== 'function') continue;
+      const originalFn = original as (...args: unknown[]) => Promise<unknown>;
+      this.apiPatches.push({ target: patchTarget, method, original: originalFn });
+      patchTarget[method] = async (...args: unknown[]): Promise<unknown> => {
+        if (this.closed) return originalFn.apply(api, args);
+        const record = this.beginApiRecord(method, args);
+        try {
+          const response = await originalFn.apply(api, args);
+          this.completeApiRecord(record, response);
+          return response;
+        } catch (err) {
+          this.failApiRecord(record, err);
+          throw err;
+        }
+      };
+    }
+  }
+
+  private beginApiRecord(method: string, args: unknown[]): NetworkRecord {
+    const [first, second] = args;
+    const options =
+      (typeof second === 'object' && second !== null ? (second as Record<string, unknown>) : {}) ??
+      {};
+    const optionsHeaders =
+      (options.headers && typeof options.headers === 'object'
+        ? (options.headers as Record<string, string>)
+        : {}) ?? {};
+    const optionsMethod =
+      typeof options.method === 'string' ? options.method.toUpperCase() : undefined;
+
+    let url: string;
+    if (typeof first === 'string') {
+      url = first;
+    } else if (first && typeof (first as { url?: unknown }).url === 'function') {
+      url = (first as { url: () => string }).url();
+    } else {
+      url = '';
+    }
+    const httpMethod = optionsMethod ?? (method === 'fetch' ? 'GET' : method.toUpperCase());
+
+    const requestId = `api-${this.apiCounter++}`;
+    const requestHeaders = redactHeaders(optionsHeaders, this.extraDenylist);
+
+    return {
+      kind: 'network',
+      t: this.deps.clock.now() - this.deps.startedAt,
+      requestId,
+      source: 'api-request-context',
+      method: httpMethod,
+      url,
+      requestHeaders,
+      ...this.snapshotApiCorrelation(),
     };
-    emitter.on('request', (req) => this.handleRequest(req as PwRequest, 'api-request-context'));
-    emitter.on('response', (resp) => this.handleResponse(resp as PwResponse));
-    emitter.on('requestfinished', (req) => {
-      void this.handleRequestFinished(req as PwRequest);
-    });
-    emitter.on('requestfailed', (req) => this.handleRequestFailed(req as PwRequest));
+  }
+
+  private completeApiRecord(record: NetworkRecord, response: unknown): void {
+    if (response && typeof response === 'object') {
+      const r = response as {
+        status?: () => number;
+        statusText?: () => string;
+        headers?: () => Record<string, string>;
+      };
+      try {
+        if (typeof r.status === 'function') record.status = r.status();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (typeof r.statusText === 'function') record.statusText = r.statusText();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (typeof r.headers === 'function') {
+          record.responseHeaders = redactHeaders(r.headers(), this.extraDenylist);
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+    record.duration = Math.max(0, this.deps.clock.now() - this.deps.startedAt - record.t);
+    this.write(record);
+  }
+
+  private failApiRecord(record: NetworkRecord, err: unknown): void {
+    record.failure = {
+      errorText: err instanceof Error ? err.message : String(err),
+    };
+    record.duration = Math.max(0, this.deps.clock.now() - this.deps.startedAt - record.t);
+    this.write(record);
+  }
+
+  private snapshotApiCorrelation(): Pick<NetworkRecord, 'statementSeq' | 'stepPath'> {
+    const out: Pick<NetworkRecord, 'statementSeq' | 'stepPath'> = {};
+    const seq = this.deps.getCurrentStatementSeq();
+    if (seq !== undefined) out.statementSeq = seq;
+    const stepPath = this.deps.getCurrentStepPath();
+    if (stepPath) out.stepPath = stepPath;
+    return out;
   }
 
   private handleRequest(request: PwRequest, source: NetworkSource): void {
@@ -304,6 +427,12 @@ export class NetworkCaptureSession {
    */
   stop(testFailed: boolean): Promise<void> {
     if (this.closed) return Promise.resolve();
+    // Revert APIRequestContext method patches first so any callbacks
+    // that fire during the rest of teardown see the originals.
+    for (const patch of this.apiPatches) {
+      patch.target[patch.method] = patch.original;
+    }
+    this.apiPatches.length = 0;
     for (const stale of this.coalescer.drain()) {
       stale.duration = Math.max(0, this.deps.clock.now() - this.deps.startedAt - stale.t);
       this.write(stale);

@@ -40,7 +40,7 @@ export function runScenarioAssertions(
   describe(`integration: end-to-end scenarios (${label})`, () => {
     it('1. happy path click — basic pipeline + statement.screenshot', () => {
       const trace = getTrace('happy path click');
-      expect(trace.schemaVersion).toBe(1);
+      expect(trace.schemaVersion).toBe(2);
       expect(trace.test.status).toBe('passed');
       expect(trace.statements.length).toBeGreaterThan(0);
 

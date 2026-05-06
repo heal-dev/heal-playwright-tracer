@@ -383,24 +383,89 @@ describe('NetworkCaptureSession', () => {
     expect(record.responseHeaders?.['content-type']).toBe('application/json');
   });
 
-  it('captures api-request-context traffic via attachToApiRequestContext', async () => {
+  it('captures api-request-context traffic by patching APIRequestContext methods', async () => {
     const session = new NetworkCaptureSession(ndjsonPath, deps, { enabled: true });
-    const apiEmitter = new EventEmitter();
     const apiCtx = {
-      on: apiEmitter.on.bind(apiEmitter),
-      off: apiEmitter.off.bind(apiEmitter),
+      get: async (url: string, _options?: unknown) => {
+        void _options;
+        void url;
+        return {
+          status: () => 200,
+          statusText: () => 'OK',
+          headers: () => ({ 'content-type': 'application/json' }),
+        };
+      },
+      post: async () => ({ status: () => 201, statusText: () => 'Created', headers: () => ({}) }),
     } as unknown as Parameters<typeof session.attachToApiRequestContext>[0];
     session.attachToApiRequestContext(apiCtx);
 
-    const req = makeRequest({ url: 'https://api.test/v1/things' });
-    apiEmitter.emit('request', req);
-    apiEmitter.emit('requestfinished', req);
-    await new Promise((r) => setImmediate(r));
-
+    await (apiCtx as unknown as { get: (url: string) => Promise<unknown> }).get(
+      'https://api.test/v1/things',
+    );
     await session.stop(false);
-    const [record] = readLines(ndjsonPath) as Array<{ source: string; url: string }>;
+    const [record] = readLines(ndjsonPath) as Array<{
+      source: string;
+      url: string;
+      method: string;
+      status: number;
+    }>;
     expect(record.source).toBe('api-request-context');
+    expect(record.method).toBe('GET');
     expect(record.url).toBe('https://api.test/v1/things');
+    expect(record.status).toBe(200);
+  });
+
+  it('attachToApiRequestContext is idempotent — duplicate wires do not double-patch', async () => {
+    const session = new NetworkCaptureSession(ndjsonPath, deps, { enabled: true });
+    let calls = 0;
+    const apiCtx = {
+      get: async () => {
+        calls++;
+        return { status: () => 200, statusText: () => 'OK', headers: () => ({}) };
+      },
+    } as unknown as Parameters<typeof session.attachToApiRequestContext>[0];
+    session.attachToApiRequestContext(apiCtx);
+    session.attachToApiRequestContext(apiCtx);
+
+    await (apiCtx as unknown as { get: (url: string) => Promise<unknown> }).get('https://x.test/');
+    await session.stop(false);
+    expect(calls).toBe(1);
+    expect(readLines(ndjsonPath)).toHaveLength(1);
+  });
+
+  it('records a failure when an APIRequestContext call rejects', async () => {
+    const session = new NetworkCaptureSession(ndjsonPath, deps, { enabled: true });
+    const apiCtx = {
+      get: async () => {
+        throw new Error('connection refused');
+      },
+    } as unknown as Parameters<typeof session.attachToApiRequestContext>[0];
+    session.attachToApiRequestContext(apiCtx);
+
+    await expect(
+      (apiCtx as unknown as { get: (url: string) => Promise<unknown> }).get('https://x.test/'),
+    ).rejects.toThrow('connection refused');
+    await session.stop(false);
+    const [record] = readLines(ndjsonPath) as Array<{
+      failure?: { errorText: string };
+    }>;
+    expect(record.failure?.errorText).toBe('connection refused');
+  });
+
+  it('stop() reverts the APIRequestContext method patches', async () => {
+    const session = new NetworkCaptureSession(ndjsonPath, deps, { enabled: true });
+    const original = async () => ({
+      status: () => 200,
+      statusText: () => 'OK',
+      headers: () => ({}),
+    });
+    const apiCtx = { get: original } as unknown as Parameters<
+      typeof session.attachToApiRequestContext
+    >[0];
+    session.attachToApiRequestContext(apiCtx);
+    expect((apiCtx as unknown as { get: unknown }).get).not.toBe(original);
+    await session.stop(false);
+    expect((apiCtx as unknown as { get: unknown }).get).toBe(original);
   });
 
   it('urlFilter that throws keeps the request rather than dropping it', async () => {
