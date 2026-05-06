@@ -423,3 +423,93 @@ describe('statement-projector — testCaseId', () => {
     expect(Object.prototype.hasOwnProperty.call(header!.test.context, 'testCaseId')).toBe(false);
   });
 });
+
+describe('statement-projector — index', () => {
+  it('stamps a 0-based contiguous index across roots and children in entry order', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    // Mirrors the example trace in docs:
+    //   root A (seq=2) → child B (seq=3) → root C (seq=10) with grandchild D
+    // Indexes are entry-order, so A=0, B=1, C=2, D=3.
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 2, parentSeq: null, source: 'A' }));
+    projector.write(enterEvent({ seq: 3, parentSeq: 2, source: 'B' }));
+    projector.write(okEvent(3));
+    projector.write(okEvent(2));
+    projector.write(enterEvent({ seq: 10, parentSeq: null, source: 'C' }));
+    projector.write(enterEvent({ seq: 11, parentSeq: 10, source: 'D' }));
+    projector.write(okEvent(11));
+    projector.write(okEvent(10));
+
+    const stmts = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(stmts).toHaveLength(2);
+    const [a, c] = stmts.map((s) => s.statement);
+    expect(a.source).toBe('A');
+    expect(a.index).toBe(0);
+    expect(a.children[0].source).toBe('B');
+    expect(a.children[0].index).toBe(1);
+    expect(c.source).toBe('C');
+    expect(c.index).toBe(2);
+    expect(c.children[0].source).toBe('D');
+    expect(c.children[0].index).toBe(3);
+  });
+
+  it('resets the counter back to 0 on clear() so each test starts fresh', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 1 }));
+    projector.write(okEvent(1));
+
+    projector.clear();
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 2 }));
+    projector.write(okEvent(2));
+
+    const stmts = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(stmts.map((s) => s.statement.index)).toEqual([0, 0]);
+  });
+
+  it('preserves the index assigned at enter-time when finalize() flushes a pending root', async () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 1, t: 0, source: 'first' }));
+    projector.write(okEvent(1));
+    // Second root never gets an ok — finalize will flush it.
+    projector.write(enterEvent({ seq: 3, t: 5, source: 'pending' }));
+
+    await projector.finalize({ status: 'timedOut', duration: 100 });
+
+    const stmts = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(stmts).toHaveLength(2);
+    expect(stmts[0].statement.source).toBe('first');
+    expect(stmts[0].statement.index).toBe(0);
+    expect(stmts[1].statement.source).toBe('pending');
+    expect(stmts[1].statement.index).toBe(1);
+  });
+
+  it('still increments index for orphan enters promoted to roots', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ seq: 1, parentSeq: null, source: 'root' }));
+    projector.write(enterEvent({ seq: 2, parentSeq: 999, source: 'orphan' }));
+    projector.write(okEvent(2));
+    projector.write(okEvent(1));
+
+    // Emission order is completion order: orphan's ok fires before
+    // root's, so the orphan is emitted first. Index, however, was
+    // stamped at enter time and reflects entry order.
+    const stmts = records.filter((r) => r.kind === 'statement') as StatementRecord[];
+    expect(stmts.map((s) => s.statement.source)).toEqual(['orphan', 'root']);
+    const bySource = new Map(stmts.map((s) => [s.statement.source, s.statement.index]));
+    expect(bySource.get('root')).toBe(0);
+    expect(bySource.get('orphan')).toBe(1);
+  });
+});

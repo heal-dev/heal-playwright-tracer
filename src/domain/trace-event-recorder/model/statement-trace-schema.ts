@@ -132,6 +132,18 @@ export interface Statement {
   /** Execution-order sequence number, identical to the raw enter event's seq. */
   seq: number;
 
+  /**
+   * 0-based, contiguous, per-test execution-order index. Increments
+   * by 1 every time a new statement is entered (roots and nested
+   * children alike), so the first statement to run in a test has
+   * `index: 0`, the second `index: 1`, and so on. Unlike `seq`,
+   * which is bumped by every raw event (enter/ok/throw/meta) and
+   * therefore has gaps, `index` lets consumers reason about "the
+   * Nth statement that ran" without tracking event-stream
+   * arithmetic.
+   */
+  index: number;
+
   file: string;
   line: number;
   endLine: number;

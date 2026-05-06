@@ -94,6 +94,10 @@ export class StatementProjector implements TraceEventConsumer {
   // Subset: statements whose runtime parent was null. These are
   // the only ones that become their own NDJSON record.
   private readonly rootsBySeq = new Map<number, LiveStatement>();
+  // Per-test, 0-based contiguous counter stamped onto every
+  // Statement at enter-time as `index`. Reset by `clear()` so each
+  // test starts at 0.
+  private statementCount = 0;
   private headerEmitted = false;
   private finalized = false;
 
@@ -115,7 +119,10 @@ export class StatementProjector implements TraceEventConsumer {
       }
 
       case 'enter': {
-        const live: LiveStatement = { stmt: createStatement(event), enter: event };
+        const live: LiveStatement = {
+          stmt: createStatement(event, this.statementCount++),
+          enter: event,
+        };
         this.allBySeq.set(event.seq, live);
         if (event.parentSeq == null) {
           this.rootsBySeq.set(event.seq, live);
@@ -166,6 +173,7 @@ export class StatementProjector implements TraceEventConsumer {
   clear(): void {
     this.allBySeq.clear();
     this.rootsBySeq.clear();
+    this.statementCount = 0;
     this.headerEmitted = false;
   }
 
@@ -223,9 +231,10 @@ export class StatementProjector implements TraceEventConsumer {
   }
 }
 
-function createStatement(event: EnterEvent): Statement {
+function createStatement(event: EnterEvent, index: number): Statement {
   const stmt: Statement = {
     seq: event.seq,
+    index,
     file: event.file,
     line: event.startLine,
     endLine: event.endLine,
