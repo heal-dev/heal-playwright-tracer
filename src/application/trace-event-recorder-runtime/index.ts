@@ -74,4 +74,16 @@ export const pushStep = traceEventRecorder.pushStep;
 export const popStep = traceEventRecorder.popStep;
 export const setCurrentStatementScreenshot = traceEventRecorder.setCurrentStatementScreenshot;
 export const setExporter = traceEventRecorder.setExporter;
+
+// Read accessors for sidecar adapters (network, console). These
+// expose just enough of the recorder's runtime state for the
+// adapters to correlate an out-of-band Playwright event with the
+// statement that triggered it, without giving them a reference to
+// the recorder itself.
+export const getCurrentStatementSeq = traceEventRecorder.getCurrentStatementSeq;
+export const getCurrentStepPath = traceEventRecorder.getCurrentStepPath;
+export const getStartedAt = traceEventRecorder.getStartedAt;
+/** The recorder's monotonic clock — sidecar adapters use it to compute `t = now() - startedAt`. */
+export const clock = traceEventRecorder.clock;
+
 export { SCHEMA_VERSION };

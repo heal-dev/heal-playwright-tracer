@@ -45,7 +45,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { expect as rawExpect, test as base } from '@playwright/test';
+import { expect as rawExpect, test as base, request as playwrightRequest } from '@playwright/test';
 // Side-effect: installs `globalThis.__heal_enter/__heal_ok/__heal_throw`.
 import {
   reset,
@@ -54,17 +54,24 @@ import {
   pushStep,
   popStep,
   setCurrentStatementScreenshot,
+  getCurrentStatementSeq,
+  getCurrentStepPath,
+  getStartedAt,
+  clock,
 } from '../trace-event-recorder-runtime';
 import { wrapExpect } from '../../infrastructure/playwright-locator-screenshot-adapter';
 import { StatementProjector } from '../../domain/trace-event-recorder/service/projectors';
 import { NdjsonExporter } from '../../infrastructure/ndjson-exporter-adapter';
 import { CompositeHealTraceExporter } from '../../domain/trace-event-recorder/service';
 import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/heal-trace-exporter';
+import type { TestSidecarsRecord } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 
 import { PlaywrightStepTrackingAdapter } from '../../infrastructure/playwright-step-tracking-adapter';
 import { PlaywrightTestContextAdapter } from '../../infrastructure/playwright-test-context-adapter';
 import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-locator-screenshot-adapter';
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
+import { ConsoleCaptureSession } from '../../infrastructure/playwright-console-capture-adapter';
+import { NetworkCaptureSession } from '../../infrastructure/playwright-network-capture-adapter';
 import { HealTracesLayout, resolveExecutionId } from '../../infrastructure/heal-traces-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
 import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
@@ -72,6 +79,7 @@ import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type { HealTracerTestContext, HealTestLifecycle } from '../heal-config';
 import { withTimeout } from '../../util/with-timeout';
+import { wireAllPages, type WireableSession } from './wire-all-pages';
 
 // Defaults for the optional `timeouts` block in `HealTracerConfig`.
 // `screenshotMs` caps best-effort decoration calls in the screenshot
@@ -97,8 +105,12 @@ type TraceFixtures = {
   _traceAuto: void;
 };
 
-function buildHealTraceExporter(ndjsonPath: string, ctx: HealTracerTestContext): HealTraceExporter {
-  const legs: HealTraceExporter[] = [new NdjsonExporter(ndjsonPath)];
+function buildHealTraceExporter(
+  ndjsonPath: string,
+  ctx: HealTracerTestContext,
+  prelude: TestSidecarsRecord[],
+): HealTraceExporter {
+  const legs: HealTraceExporter[] = [new NdjsonExporter(ndjsonPath, { prelude })];
 
   const { exporters = [] } = getTracerConfig();
   for (const factory of exporters) {
@@ -139,7 +151,7 @@ function assertReporterRegistered(): void {
 
 export const test = base.extend<TraceFixtures>({
   _traceAuto: [
-    async ({ page }, use, testInfo) => {
+    async ({ page, browser, request }, use, testInfo) => {
       assertReporterRegistered();
       const captured = testContextAdapter.capture(testInfo);
 
@@ -191,12 +203,40 @@ export const test = base.extend<TraceFixtures>({
         },
       };
 
+      // Network and console sidecar streams are on by default. A
+      // user can still opt out per-stream via
+      // `configureTracer({ network: { enabled: false }, ... })` —
+      // the field stays settable for tests and exceptional setups,
+      // but the public docs treat the streams as always-on.
+      const tracerConfig = getTracerConfig();
+      const networkEnabled = tracerConfig.network?.enabled !== false;
+      const consoleEnabled = tracerConfig.console?.enabled !== false;
+      const networkPath = networkEnabled
+        ? layout.networkNdjsonPath(captured.testId, captured.attempt)
+        : undefined;
+      const consolePath = consoleEnabled
+        ? layout.consoleNdjsonPath(captured.testId, captured.attempt)
+        : undefined;
+
+      const sidecarRecord: TestSidecarsRecord | undefined =
+        networkPath || consolePath
+          ? {
+              kind: 'test-sidecars',
+              ...(networkPath ? { network: HealTracesLayout.NETWORK_NDJSON_FILENAME } : {}),
+              ...(consolePath ? { console: HealTracesLayout.CONSOLE_NDJSON_FILENAME } : {}),
+            }
+          : undefined;
+
       // Fresh output pipeline per test: build a HealTraceExporter (default
       // NDJSON leg + any user-configured exporters), wrap it in a
       // projector, install on the recorder, then reset() — which
       // clears projector state and emits the test-header record via
       // the buildMetaEvent call inside the recorder.
-      const output = buildHealTraceExporter(ndjsonPath, tracerCtx);
+      const output = buildHealTraceExporter(
+        ndjsonPath,
+        tracerCtx,
+        sidecarRecord ? [sidecarRecord] : [],
+      );
       const projector = new StatementProjector(output);
       setExporter(projector);
       reset();
@@ -205,7 +245,7 @@ export const test = base.extend<TraceFixtures>({
       // previous test that crashed before drain ran.
       resetTeardownHooks();
 
-      const { timeouts = {} } = getTracerConfig();
+      const { timeouts = {} } = tracerConfig;
       const screenshotTimeoutMs = timeouts.screenshotMs ?? DEFAULT_SCREENSHOT_TIMEOUT_MS;
       const lifecycleTimeoutMs = timeouts.lifecycleMs ?? DEFAULT_LIFECYCLE_TIMEOUT_MS;
 
@@ -216,6 +256,58 @@ export const test = base.extend<TraceFixtures>({
         screenshotTimeoutMs,
       );
       const stdoutSession = new StdoutCaptureSession();
+
+      // Sidecar capture: instantiate sessions for whichever streams
+      // the user opted into, wire the test's initial context first
+      // (so the very first request issued by the test body is
+      // captured even if it races a popup) and then patch
+      // `browser.newContext` / `browser.newPage` so any context the
+      // test creates later is also wired. The patches are reverted
+      // by `restoreWiring()` in the finally block — `browser` is
+      // worker-scoped, so a stale patch would leak into the next
+      // test in the same worker.
+      const consoleSession =
+        consoleEnabled && consolePath
+          ? new ConsoleCaptureSession(
+              consolePath,
+              {
+                clock,
+                startedAt: getStartedAt(),
+                getCurrentStatementSeq,
+                getCurrentStepPath,
+              },
+              tracerConfig.console ?? {},
+            )
+          : undefined;
+      const networkSession =
+        networkEnabled && networkPath
+          ? new NetworkCaptureSession(
+              networkPath,
+              {
+                clock,
+                startedAt: getStartedAt(),
+                getCurrentStatementSeq,
+                getCurrentStepPath,
+              },
+              tracerConfig.network ?? {},
+            )
+          : undefined;
+      const wireableSessions: WireableSession[] = [];
+      if (consoleSession) wireableSessions.push(consoleSession);
+      if (networkSession) wireableSessions.push(networkSession);
+      let restoreWiring: (() => void) | undefined;
+      if (wireableSessions.length > 0) {
+        // Wire the test's primary BrowserContext + APIRequestContext
+        // immediately, then patch the Browser for any new contexts.
+        for (const s of wireableSessions) s.attachToContext(page.context());
+        if (networkSession) {
+          networkSession.attachToApiRequestContext(request);
+        }
+        restoreWiring = wireAllPages(wireableSessions, {
+          browser,
+          apiRequest: playwrightRequest,
+        });
+      }
 
       // Instantiate user-configured lifecycles for this test. Each
       // factory runs fresh per test so any closure state the factory
@@ -270,6 +362,38 @@ export const test = base.extend<TraceFixtures>({
 
         const capturedStdout = stdoutSession.stop();
         stopScreenshots();
+
+        // Stop sidecar capture BEFORE finalizing the projector. Order:
+        //   1. restore the Browser patches so any post-teardown code
+        //      paths (e.g. Playwright internal cleanup) see a clean
+        //      newContext/newPage;
+        //   2. close the console session (no async work to drain);
+        //   3. drain + close the network session, passing the test's
+        //      final status so 'on-error' bodies are flushed only
+        //      when relevant. Network last so any in-flight response
+        //      that fires during teardown still lands in the file.
+        if (restoreWiring) {
+          try {
+            restoreWiring();
+          } catch (err) {
+            console.error('[heal-playwright-tracer] wireAllPages.restore failed:', err);
+          }
+        }
+        if (consoleSession) {
+          try {
+            await withTimeout(consoleSession.close(), lifecycleTimeoutMs, 'console.close');
+          } catch (err) {
+            console.error('[heal-playwright-tracer] console.close did not finish:', err);
+          }
+        }
+        if (networkSession) {
+          const failed = (testInfo.status ?? 'passed') !== 'passed';
+          try {
+            await withTimeout(networkSession.stop(failed), lifecycleTimeoutMs, 'network.stop');
+          } catch (err) {
+            console.error('[heal-playwright-tracer] network.stop did not finish:', err);
+          }
+        }
 
         // Emit the final test-result record and close the output
         // exporter chain (flushes NDJSON fd, awaits in-flight

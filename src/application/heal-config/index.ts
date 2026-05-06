@@ -23,4 +23,7 @@ export type {
   HealTraceExporterFactory,
   HealTestLifecycle,
   HealTestLifecycleFactory,
+  HealTracerNetworkConfig,
+  HealTracerNetworkBodyMode,
+  HealTracerConsoleConfig,
 } from './types';

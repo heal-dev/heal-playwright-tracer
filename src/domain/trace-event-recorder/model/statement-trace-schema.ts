@@ -29,7 +29,7 @@
 // Heal autopilot agent, humans debugging a failing test) should
 // import these types to stay in sync with the file format.
 
-export const HEAL_TRACE_SCHEMA_VERSION = 1;
+export const HEAL_TRACE_SCHEMA_VERSION = 2;
 
 /**
  * One line of a `heal-traces.ndjson` file. Discriminated by `kind`.
@@ -38,7 +38,8 @@ export type HealTraceRecord =
   | TestHeaderRecord
   | StatementRecord
   | TestResultRecord
-  | TestAttachmentsRecord;
+  | TestAttachmentsRecord
+  | TestSidecarsRecord;
 
 export interface TestHeaderRecord {
   kind: 'test-header';
@@ -259,6 +260,30 @@ export interface TestAttachment {
   path: string;
   /** MIME type (e.g. `'application/zip'`, `'image/png'`, `'video/webm'`). */
   contentType: string;
+}
+
+/**
+ * Optional record written by the fixture early in the trace (before
+ * the first `statement`) when the user opted into network and/or
+ * console capture. Lists the sidecar NDJSON files that live next to
+ * `heal-traces.ndjson` and that consumers should also read to
+ * reconstruct a complete picture of the test.
+ *
+ * Both fields are filenames RELATIVE to the same per-attempt
+ * directory that hosts `heal-traces.ndjson`. Absent fields mean the
+ * corresponding feature is off for this test — consumers should not
+ * try to open the file.
+ *
+ * Written by the fixture (not the reporter) because the fixture is
+ * the only place that knows the filenames at the moment the streams
+ * are opened. Placed early in the file so a streaming consumer can
+ * route incoming records to the right sink without buffering the
+ * whole trace.
+ */
+export interface TestSidecarsRecord {
+  kind: 'test-sidecars';
+  network?: string;
+  console?: string;
 }
 
 /**

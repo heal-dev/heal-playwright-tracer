@@ -20,6 +20,8 @@ import * as path from 'path';
 export class HealTracesLayout {
   static readonly DIRNAME = 'heal-traces';
   static readonly NDJSON_FILENAME = 'heal-traces.ndjson';
+  static readonly NETWORK_NDJSON_FILENAME = 'heal-network.ndjson';
+  static readonly CONSOLE_NDJSON_FILENAME = 'heal-console.ndjson';
   static readonly TRACE_FILENAME = 'trace.zip';
   static readonly SCREENSHOTS_SUBDIR = 'screenshots';
   static readonly VIDEOS_SUBDIR = 'videos';
@@ -45,6 +47,20 @@ export class HealTracesLayout {
 
   ndjsonPath(playwrightTestId: string, attempt: number): string {
     return path.join(this.testDir(playwrightTestId, attempt), HealTracesLayout.NDJSON_FILENAME);
+  }
+
+  networkNdjsonPath(playwrightTestId: string, attempt: number): string {
+    return path.join(
+      this.testDir(playwrightTestId, attempt),
+      HealTracesLayout.NETWORK_NDJSON_FILENAME,
+    );
+  }
+
+  consoleNdjsonPath(playwrightTestId: string, attempt: number): string {
+    return path.join(
+      this.testDir(playwrightTestId, attempt),
+      HealTracesLayout.CONSOLE_NDJSON_FILENAME,
+    );
   }
 
   tracePath(playwrightTestId: string, attempt: number): string {

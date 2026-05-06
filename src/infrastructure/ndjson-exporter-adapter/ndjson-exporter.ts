@@ -25,14 +25,30 @@ import type {
   HealTraceRecord,
 } from '../../domain/trace-event-recorder/port/heal-trace-exporter';
 
+export interface NdjsonExporterOptions {
+  /**
+   * Records to write immediately at fd-open time, before the first
+   * call to `write()`. Used by the fixture to drop a
+   * `test-sidecars` line into the file before the projector starts
+   * emitting `test-header` / `statement` / `test-result` records.
+   * Each record is appended as its own NDJSON line, in order.
+   */
+  prelude?: HealTraceRecord[];
+}
+
 export class NdjsonExporter implements HealTraceExporter {
   private readonly fd: number;
   private closed = false;
 
-  constructor(filePath: string) {
+  constructor(filePath: string, options: NdjsonExporterOptions = {}) {
     // O_APPEND so concurrent appenders (not expected, but cheap) are
     // safe and so truncation on reopen never happens.
     this.fd = fs.openSync(filePath, 'a');
+    if (options.prelude && options.prelude.length > 0) {
+      for (const record of options.prelude) {
+        fs.writeSync(this.fd, JSON.stringify(record) + '\n');
+      }
+    }
   }
 
   write(record: HealTraceRecord): void {
