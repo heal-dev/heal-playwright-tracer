@@ -84,36 +84,7 @@ declare module '@playwright/test' {
 }
 ```
 
-Per-test output lands at
-`heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`.
-See [Output layout](#output-layout) below for the full tree.
-
-### Register the reporter
-
-The `HealTracerReporter` is **required** when the Babel plugin is
-wired. It runs in the Playwright main process and handles three
-things in-worker code can't:
-
-1. **Crash rescue.** When a worker dies before the fixture can
-   finalize its trace (OOM, SIGKILL, segfault, `process.exit()`),
-   the per-test NDJSON is left without its `test-result`
-   terminator. The reporter appends a synthesized `test-result`
-   carrying the classified crash cause (e.g. `OutOfMemoryError`,
-   `WorkerCrash`).
-2. **Playwright artefacts.** Playwright populates
-   `testInfo.attachments` (trace.zip, video, failure screenshots,
-   user `testInfo.attach()` files) **after** our fixture's
-   `afterEach` returns. The reporter is the first hook with the
-   final attachment list, so it copies each artefact from
-   Playwright's outputDir into the persistent
-   `heal-traces/<executionId>/<playwrightTestId>/<attempt>/` tree
-   and appends a `test-attachments` record to the NDJSON. This is
-   what powers the `Trace` button and video pane in
-   `heal-tracer view`.
-3. **Execution history.** The reporter writes
-   `heal-traces/<executionId>/execution.json` and appends one
-   `ExecutionRecord` line to `heal-traces/executions.ndjson`,
-   producing the run index the viewer's execution selector reads.
+Then register the reporter
 
 ```ts
 // playwright.config.ts
@@ -125,13 +96,12 @@ export default defineConfig({
 
 If you wire the Babel plugin without registering the reporter, the
 fixture fails fast on the first test of every worker with a
-diagnostic pointing back here. The reporter is idempotent — wiring
-it more than once is safe.
+diagnostic pointing back here.
 
 ## Output layout
 
-Every run produces a self-contained execution dir under
-`heal-traces/`:
+Every run produces a self-contained execution dir under:
+`heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`.
 
 ```
 <cwd>/heal-traces/
@@ -168,7 +138,7 @@ run.
 2. You should see `heal-traces.ndjson`.
 3. You can ask Claude or another agent to use those to understand your test results.
 
-## Viewing traces
+### Viewing traces
 
 A small CLI ships alongside the tracer so humans can browse the
 captured traces in a local browser without setting up a Heal account:
@@ -251,5 +221,5 @@ Scope the `include` filter in `playwright.config.ts` so only your
 
 Copyright © 2026 **MYIA SAS**.
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**, except for the `tracer-viewer-bundle` which is a vendored, free to use version of the Heal trace viewer.
 See the [LICENSE](LICENSE) file for the full text.

@@ -125,6 +125,32 @@ HEAL_PRINT_ARTIFACT_PATHS=1 npx playwright test
   test artifacts dir: /path/to/test-results/foo
 ```
 
+## The Heal reporter
+
+The `HealTracerReporter` runs in the Playwright main process and handles three
+things in-worker code can't:
+
+1. **Crash rescue.** When a worker dies before the fixture can
+   finalize its trace (OOM, SIGKILL, segfault, `process.exit()`),
+   the per-test NDJSON is left without its `test-result`
+   terminator. The reporter appends a synthesized `test-result`
+   carrying the classified crash cause (e.g. `OutOfMemoryError`,
+   `WorkerCrash`).
+2. **Playwright artefacts.** Playwright populates
+   `testInfo.attachments` (trace.zip, video, failure screenshots,
+   user `testInfo.attach()` files) **after** our fixture's
+   `afterEach` returns. The reporter is the first hook with the
+   final attachment list, so it copies each artefact from
+   Playwright's outputDir into the persistent
+   `heal-traces/<executionId>/<playwrightTestId>/<attempt>/` tree
+   and appends a `test-attachments` record to the NDJSON. This is
+   what powers the `Trace` button and video pane in
+   `heal-tracer view`.
+3. **Execution history.** The reporter writes
+   `heal-traces/<executionId>/execution.json` and appends one
+   `ExecutionRecord` line to `heal-traces/executions.ndjson`,
+   producing the run index the viewer's execution selector reads.
+
 ## CI
 
 ### Workflows
