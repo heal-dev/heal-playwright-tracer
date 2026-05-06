@@ -7,8 +7,8 @@ The package's docs are split by audience:
   screenshot-capture pipeline (Chromium CDP path, Firefox/WebKit JS
   fallback, off-viewport handling, decoration timeouts). Read this
   first if you're contributing.
-- [`configuration.md`](configuration.md) — end-user surface:
-  `configureTracer`, custom exporters, lifecycles, the
+- [`configuration.md`](configuration.md) — end-user surface: the
+  reporter, `configureTracer`, custom exporters, lifecycles, the
   `screenshotMs` / `lifecycleMs` knobs, ESM consumer guidance, the
   `HEAL_PRINT_ARTIFACT_PATHS` debug env var.
 - [`ci.md`](ci.md) — CI workflows, release flow, branch/tag

@@ -98,8 +98,8 @@ See [Output layout](#output-layout) below for the full tree.
 
 ## Output layout
 
-Every run produces a self-contained execution dir under
-`heal-traces/`:
+Every run produces a self-contained execution dir under:
+`heal-traces/<executionId>/<playwrightTestId>/<attempt>/heal-traces.ndjson`.
 
 ```
 <cwd>/heal-traces/
@@ -136,7 +136,7 @@ run.
 2. You should see `heal-traces.ndjson`.
 3. You can ask Claude or another agent to use those to understand your test results.
 
-## Viewing traces
+### Viewing traces
 
 A small CLI ships alongside the tracer so humans can browse the
 captured traces in a local browser without setting up a Heal account:
@@ -219,5 +219,5 @@ Scope the `include` filter in `playwright.config.ts` so only your
 
 Copyright © 2026 **MYIA SAS**.
 
-This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**.
+This project is licensed under the **GNU Affero General Public License v3.0 (AGPL-3.0)**, except for the `tracer-viewer-bundle` which is a vendored, free to use version of the Heal trace viewer.
 See the [LICENSE](LICENSE) file for the full text.
