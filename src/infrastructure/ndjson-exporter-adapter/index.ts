@@ -5,4 +5,3 @@
  */
 
 export { NdjsonExporter } from './ndjson-exporter';
-export type { NdjsonExporterOptions } from './ndjson-exporter';
