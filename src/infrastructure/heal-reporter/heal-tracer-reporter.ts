@@ -68,6 +68,7 @@ import {
 import { HealTracesLayout, getExecutionIdSource, resolveExecutionId } from '../heal-traces-layout';
 import { CrashErrorClassifier } from './crash-error-classifier';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
+import { log } from '../../util/logger';
 
 /**
  * Subdirectory under each project's `outputDir` where the fixture
@@ -248,9 +249,7 @@ export class HealTracerReporter implements Reporter {
       try {
         this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
       } catch (err) {
-        process.stderr.write(
-          `[heal-playwright-tracer/reporter] failed to append synthetic test-result to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
-        );
+        log.error(`failed to append synthetic test-result to ${traceCtx.ndjsonPath}`, err);
         this.cleanupRegistry(test, result);
         return;
       }
@@ -267,9 +266,7 @@ export class HealTracerReporter implements Reporter {
     try {
       this.appendFile(traceCtx.ndjsonPath, JSON.stringify(attachmentsRecord) + '\n');
     } catch (err) {
-      process.stderr.write(
-        `[heal-playwright-tracer/reporter] failed to append test-attachments to ${traceCtx.ndjsonPath}: ${String(err)}\n`,
-      );
+      log.error(`failed to append test-attachments to ${traceCtx.ndjsonPath}`, err);
       this.cleanupRegistry(test, result);
       return;
     }
@@ -361,9 +358,7 @@ export class HealTracerReporter implements Reporter {
         fs.mkdirSync(path.dirname(dstAbs), { recursive: true });
         fs.copyFileSync(srcResolved, dstAbs);
       } catch (err) {
-        process.stderr.write(
-          `[heal-playwright-tracer/reporter] failed to copy attachment ${att.name} (${srcResolved} → ${dstAbs}): ${String(err)}\n`,
-        );
+        log.error(`failed to copy attachment ${att.name} (${srcResolved} → ${dstAbs})`, err);
         continue;
       }
 
@@ -441,9 +436,7 @@ export class HealTracerReporter implements Reporter {
     void Promise.resolve()
       .then(() => this.onRescue!(record, rescueCtx))
       .catch((err: unknown) => {
-        process.stderr.write(
-          `[heal-playwright-tracer/reporter] onRescue hook failed: ${String(err)}\n`,
-        );
+        log.error('onRescue hook failed', err);
       });
   }
 
@@ -518,18 +511,14 @@ export class HealTracerReporter implements Reporter {
       fs.mkdirSync(layout.executionDir(), { recursive: true });
       fs.writeFileSync(layout.executionManifestPath(), JSON.stringify(manifest, null, 2), 'utf8');
     } catch (err) {
-      process.stderr.write(
-        `[heal-playwright-tracer/reporter] failed to write execution.json: ${String(err)}\n`,
-      );
+      log.error('failed to write execution.json', err);
     }
 
     try {
       fs.mkdirSync(layout.healTracesRoot(), { recursive: true });
       this.appendFile(layout.executionsNdjsonPath(), JSON.stringify(record) + '\n');
     } catch (err) {
-      process.stderr.write(
-        `[heal-playwright-tracer/reporter] failed to append executions.ndjson: ${String(err)}\n`,
-      );
+      log.error('failed to append executions.ndjson', err);
     }
   }
 }

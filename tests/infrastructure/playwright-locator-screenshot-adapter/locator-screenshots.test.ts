@@ -379,276 +379,6 @@ describe('locator-screenshots', () => {
   });
 });
 
-// --- CDP highlight path ---------------------------------------------------
-//
-// When the page exposes a CDP session and the locator carries an
-// `evaluate` method (i.e. is a real Playwright Locator), the highlight
-// is drawn natively via `Overlay.highlightNode` and the screenshot is
-// captured via the same CDP channel. The JS canvas overlay is bypassed
-// entirely, eliminating the boundingBox-vs-screenshot layout-shift
-// race that the JS path inherits from `boundingBox()`.
-
-interface CdpCallRecord {
-  command: string;
-  params: unknown;
-}
-
-function makeCdpFakePageAndLocatorClass() {
-  const log: CallLog[] = [];
-  const screenshotPaths: string[] = [];
-  const sendCalls: CdpCallRecord[] = [];
-  const sendResponses = new Map<string, () => unknown>();
-
-  const sendMock = vi.fn(async (command: string, params: unknown) => {
-    sendCalls.push({ command, params });
-    const handler = sendResponses.get(command);
-    if (handler) return await handler();
-    return {};
-  });
-  const newCDPSessionMock = vi.fn().mockResolvedValue({ send: sendMock, detach: vi.fn() });
-
-  const fakePage = {
-    locator(_selector: string) {
-      return new FakeLocator();
-    },
-    async evaluate(fn: unknown, arg: unknown) {
-      log.push({ name: 'page.evaluate', args: [arg] });
-      void fn;
-    },
-    async screenshot(opts: { path: string }) {
-      screenshotPaths.push(opts.path);
-      log.push({ name: 'page.screenshot', args: [opts] });
-    },
-    context: () => ({ newCDPSession: newCDPSessionMock }),
-  };
-
-  class FakeLocator {
-    async click(...args: unknown[]) {
-      log.push({ name: 'locator.click', args });
-      return 'clicked';
-    }
-    async boundingBox() {
-      log.push({ name: 'locator.boundingBox', args: [] });
-      return { x: 10, y: 20, width: 100, height: 50 };
-    }
-    async evaluate(fn: unknown, arg: unknown) {
-      log.push({ name: 'locator.evaluate', args: [arg] });
-      void fn;
-    }
-    page() {
-      return fakePage;
-    }
-  }
-
-  return { fakePage, FakeLocator, log, screenshotPaths, sendCalls, sendResponses };
-}
-
-function installCdpHappyPath(sendResponses: Map<string, () => unknown>, pngBase64: string): void {
-  sendResponses.set('Runtime.evaluate', () => ({ result: { objectId: 'obj-1' } }));
-  sendResponses.set('DOM.requestNode', () => ({ nodeId: 42 }));
-  sendResponses.set('Page.captureScreenshot', () => ({ data: pngBase64 }));
-}
-
-describe('locator-screenshots — CDP highlight path', () => {
-  beforeEach(() => {
-    mockSetScreenshot.mockReset();
-  });
-
-  it('runs stash → resolve → enable → highlight → screenshot → hide → release in order', async () => {
-    const { fakePage, FakeLocator, sendCalls, sendResponses, log } =
-      makeCdpFakePageAndLocatorClass();
-    const pngBase64 = Buffer.from('fake-png').toString('base64');
-    installCdpHappyPath(sendResponses, pngBase64);
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-
-    // Expected CDP send order — Overlay.enable runs once on first
-    // capture, the rest is the per-action sequence.
-    expect(sendCalls.map((c) => c.command)).toEqual([
-      'Runtime.evaluate',
-      'DOM.requestNode',
-      'Overlay.enable',
-      'Overlay.highlightNode',
-      'Page.captureScreenshot',
-      'Overlay.hideHighlight',
-      'Runtime.releaseObject',
-    ]);
-
-    // Stash bracket: locator.evaluate ran twice (stash then unstash).
-    expect(log.filter((c) => c.name === 'locator.evaluate')).toHaveLength(2);
-    // JS-overlay path was not touched.
-    expect(log.filter((c) => c.name === 'page.evaluate')).toHaveLength(0);
-    expect(log.filter((c) => c.name === 'locator.boundingBox')).toHaveLength(0);
-
-    expect(writeFileSpy).toHaveBeenCalledWith(
-      '/tmp/out/highlight-1-click.png',
-      Buffer.from('fake-png'),
-    );
-    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-click.png');
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('passes a translucent-magenta highlightConfig and the resolved nodeId', async () => {
-    const { fakePage, FakeLocator, sendCalls, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, Buffer.from('').toString('base64'));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-
-    const highlight = sendCalls.find((c) => c.command === 'Overlay.highlightNode');
-    expect(highlight).toBeDefined();
-    const params = highlight!.params as {
-      highlightConfig: {
-        contentColor: { r: number; g: number; b: number; a: number };
-        showInfo: boolean;
-      };
-      nodeId: number;
-    };
-    expect(params.nodeId).toBe(42);
-    expect(params.highlightConfig.contentColor).toEqual({ r: 255, g: 0, b: 255, a: 0.08 });
-    expect(params.highlightConfig.showInfo).toBe(false);
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('memoizes Overlay.enable across multiple captures on the same session', async () => {
-    const { fakePage, FakeLocator, sendCalls, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, Buffer.from('').toString('base64'));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-    await loc.click();
-    await loc.click();
-
-    const enables = sendCalls.filter((c) => c.command === 'Overlay.enable');
-    expect(enables).toHaveLength(1);
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('hides the highlight and releases the remote object even when the screenshot rejects', async () => {
-    const { fakePage, FakeLocator, sendCalls, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, '');
-    sendResponses.set('Page.captureScreenshot', () => {
-      throw new Error('snapshot failed');
-    });
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-
-    const commands = sendCalls.map((c) => c.command);
-    expect(commands).toContain('Overlay.hideHighlight');
-    expect(commands).toContain('Runtime.releaseObject');
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('falls back to the JS overlay path (reusing the seq) when DOM.requestNode returns no nodeId', async () => {
-    const { fakePage, FakeLocator, sendCalls, sendResponses, log } =
-      makeCdpFakePageAndLocatorClass();
-    const pngBase64 = Buffer.from('fake-png').toString('base64');
-    installCdpHappyPath(sendResponses, pngBase64);
-    // Detached-stash simulation: requestNode returns no nodeId.
-    sendResponses.set('DOM.requestNode', () => ({}));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-
-    const commands = sendCalls.map((c) => c.command);
-    // CDP path bailed before highlighting.
-    expect(commands).not.toContain('Overlay.highlightNode');
-    // Remote object cleanup still ran.
-    expect(commands).toContain('Runtime.releaseObject');
-    // JS fallback drew the overlay and screenshotted via CDP under
-    // the same seq + filename.
-    expect(log.some((c) => c.name === 'locator.boundingBox')).toBe(true);
-    expect(log.some((c) => c.name === 'page.evaluate')).toBe(true);
-    expect(commands).toContain('Page.captureScreenshot');
-    expect(writeFileSpy).toHaveBeenCalledWith(
-      '/tmp/out/highlight-1-click.png',
-      Buffer.from('fake-png'),
-    );
-    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-click.png');
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('caps locator.evaluate (stash + unstash) with a short timeout so the CDP path cannot block', async () => {
-    const { fakePage, FakeLocator, log, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, Buffer.from('').toString('base64'));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-    const recordedOpts: unknown[] = [];
-    (FakeLocator.prototype as { evaluate: (...a: unknown[]) => Promise<unknown> }).evaluate =
-      async function (fn: unknown, arg: unknown, options?: unknown) {
-        recordedOpts.push(options);
-        log.push({ name: 'locator.evaluate', args: [arg, options] });
-        void fn;
-      };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-
-    const loc = new FakeLocator();
-    await loc.click();
-
-    // Both stash and unstash carry the timeout cap.
-    expect(recordedOpts).toEqual([{ timeout: 1000 }, { timeout: 1000 }]);
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('captures viewport-only on the action path (no captureBeyondViewport)', async () => {
-    // Action path scrolls the target into view, so a viewport
-    // screenshot is sufficient and keeps the PNG small.
-    const { fakePage, FakeLocator, sendCalls, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, Buffer.from('').toString('base64'));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const loc = new FakeLocator();
-    await loc.click();
-
-    const shotCall = sendCalls.find((c) => c.command === 'Page.captureScreenshot');
-    expect(shotCall).toBeDefined();
-    expect(shotCall!.params).toEqual({ format: 'png' });
-
-    writeFileSpy.mockRestore();
-  });
-
-  it('does not block the action when CDP Page.captureScreenshot wedges — withTimeout fires, fallback runs', async () => {
-    const { fakePage, FakeLocator, sendResponses } = makeCdpFakePageAndLocatorClass();
-    installCdpHappyPath(sendResponses, '');
-    // Page.captureScreenshot never resolves — withTimeout must fire.
-    sendResponses.set('Page.captureScreenshot', () => new Promise(() => {}));
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 50);
-    const loc = new FakeLocator();
-    const start = Date.now();
-    const result = await loc.click();
-    const elapsed = Date.now() - start;
-
-    // Action ran to completion despite the wedged screenshot send.
-    expect(result).toBe('clicked');
-    // Total time must be far less than the actionTimeout the user
-    // would otherwise wait for — both CDP and JS fallback attempts
-    // are each capped at 50ms, so well under 1s in aggregate.
-    expect(elapsed).toBeLessThan(1000);
-
-    writeFileSpy.mockRestore();
-  });
-});
-
 // --- wrapExpect (locator-assertion screenshots) ---------------------------
 
 // Mirrors the locator-action tests: we drive a fake `expect` function
@@ -746,6 +476,9 @@ describe('wrapExpect — locator assertion screenshots', () => {
     const result = await (assertion.toBeVisible as () => Promise<unknown>)();
 
     expect(result).toBe('ok');
+    // The default fake locator has no `scrollIntoViewIfNeeded`, so
+    // the optional pre-screenshot scroll is skipped. The flow is
+    // measure → draw overlay → screenshot → remove overlay.
     expect(log.map((c) => c.name)).toEqual([
       'locator.boundingBox',
       'page.evaluate', // draw overlay
@@ -804,8 +537,9 @@ describe('wrapExpect — locator assertion screenshots', () => {
 
     await expect((assertion.toBeVisible as () => Promise<unknown>)()).rejects.toThrow('boom');
 
-    // Both draw (before) and remove (after) overlay evaluate calls ran,
-    // even though the assertion threw in between.
+    // Two page.evaluate calls — draw overlay (before) and remove
+    // overlay (after). The remove must run even though the
+    // assertion threw in between.
     const evaluates = log.filter((c) => c.name === 'page.evaluate');
     expect(evaluates).toHaveLength(2);
   });
@@ -854,10 +588,12 @@ describe('wrapExpect — locator assertion screenshots', () => {
     expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-assert-toBeVisible.png');
   });
 
-  it('does not scroll the target before an assertion screenshot, even when scrollIntoViewIfNeeded exists', async () => {
-    // Locator assertions like `toBeInViewport` would change outcome
-    // if the tracer scrolled before they ran. The assertion path
-    // captures beyond the viewport instead.
+  it('scrolls the target into view before non-viewport-sensitive assertions', async () => {
+    // For non-viewport-sensitive assertions (`toBeVisible`,
+    // `toHaveText`, …) we DO scroll the target into view before
+    // the screenshot — same as locator actions. This makes the
+    // highlight visible regardless of where the element sits in
+    // the document.
     const { fakePage, locator, log } = makeFakeLocatorInstance();
     (locator as { scrollIntoViewIfNeeded?: () => Promise<void> }).scrollIntoViewIfNeeded =
       async function () {
@@ -869,56 +605,42 @@ describe('wrapExpect — locator assertion screenshots', () => {
     const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
     await (assertion.toBeVisible as () => Promise<unknown>)();
 
+    expect(log[0].name).toBe('locator.scrollIntoViewIfNeeded');
+  });
+
+  it('does NOT scroll the target before `expect(loc).toBeInViewport()`', async () => {
+    // `toBeInViewport()` is the one assertion whose outcome
+    // depends on viewport position — scrolling the target into
+    // view before running it would force every assertion to pass.
+    // The wrapper opts out of `scrollBeforeCapture` for this
+    // specific method.
+    const { fakePage, locator, log } = makeFakeLocatorInstance();
+    (locator as { scrollIntoViewIfNeeded?: () => Promise<void> }).scrollIntoViewIfNeeded =
+      async function () {
+        log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
+      };
+
+    // Add `toBeInViewport` to the fake expect so the wrapper sees
+    // it and applies the carve-out.
+    const fakeExpectWithToBeInViewport = Object.assign(
+      function (_t: unknown) {
+        return {
+          async toBeInViewport(...args: unknown[]) {
+            void args;
+            return 'ok';
+          },
+        };
+      },
+      { soft: () => ({}), poll: null },
+    );
+
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    const wrapped = wrapExpect(
+      fakeExpectWithToBeInViewport as unknown as (...a: unknown[]) => unknown,
+    );
+    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
+    await (assertion.toBeInViewport as () => Promise<unknown>)();
+
     expect(log.some((c) => c.name === 'locator.scrollIntoViewIfNeeded')).toBe(false);
-  });
-
-  it('passes fullPage: true to page.screenshot on the assertion JS-fallback path', async () => {
-    // Off-viewport assertion targets must still appear in the
-    // screenshot. Without CDP, the only way to capture beyond the
-    // viewport is `fullPage: true`.
-    const { fakePage, locator, log } = makeFakeLocatorInstance();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-
-    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    await (assertion.toBeVisible as () => Promise<unknown>)();
-
-    const shotCall = log.find((c) => c.name === 'page.screenshot');
-    expect(shotCall).toBeDefined();
-    expect((shotCall!.args[0] as { fullPage?: boolean }).fullPage).toBe(true);
-  });
-
-  it('passes captureBeyondViewport: true to CDP Page.captureScreenshot on the assertion CDP path', async () => {
-    // CDP equivalent of the JS-fallback fullPage flag: rasterizes
-    // the full document so off-viewport targets still appear.
-    const { fakePage, locator, log } = makeFakeLocatorInstance();
-    const sendCalls: CdpCallRecord[] = [];
-    const pngBase64 = Buffer.from('fake-png').toString('base64');
-    const sendMock = vi.fn(async (command: string, params: unknown) => {
-      sendCalls.push({ command, params });
-      if (command === 'Page.captureScreenshot') return { data: pngBase64 };
-      return {};
-    });
-    (fakePage as unknown as { context: () => unknown }).context = () => ({
-      newCDPSession: vi.fn().mockResolvedValue({ send: sendMock, detach: vi.fn() }),
-    });
-    const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    await (assertion.toBeVisible as () => Promise<unknown>)();
-
-    // Locator has no `evaluate`, so we go through the JS overlay
-    // path but the screenshot itself still goes through CDP. It
-    // must carry captureBeyondViewport.
-    const shot = sendCalls.find((c) => c.command === 'Page.captureScreenshot');
-    expect(shot).toBeDefined();
-    expect(shot!.params).toEqual({ format: 'png', captureBeyondViewport: true });
-    // page.screenshot fallback was bypassed on the screenshot step
-    // because CDP was available.
-    expect(log.some((c) => c.name === 'page.screenshot')).toBe(false);
-
-    writeFileSpy.mockRestore();
   });
 });

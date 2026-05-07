@@ -47,88 +47,71 @@ no manual import swap required.
 ## Locator-action highlight screenshots
 
 Every patched locator action (and locator-targeted assertion) takes a
-highlight screenshot before the action runs. How the highlight is
-drawn depends on the browser:
+highlight screenshot before the action runs. The pipeline is one
+unified flow on every browser:
 
-- **Chromium**: drawn natively via CDP `Overlay.highlightNode`. The
-  renderer composes the highlight at rasterize time using the
-  element's _current_ layout box, so the highlight cannot drift if
-  the page reflows between locator resolution and screenshot.
-  `Overlay.highlightNode` is a fill-based primitive (no native
-  outline mode), so we keep the alpha very low
-  (`contentColor: rgba(255, 0, 255, 0.08)`) — the visible highlight
-  reads as a frame, not a tint, while still preserving rasterize-time
-  composition.
-- **Firefox / WebKit**: no CDP, so we fall back to a JS DOM overlay
-  (`overlay-helpers.ts`) — a `<div>` with the same near-invisible
-  magenta fill (`rgba(255, 0, 255, 0.08)`) and a 4px magenta border,
-  matching
-  the CDP path visually. We use a `<div>` rather than a `<canvas>`
-  because Playwright's trace viewer captures DOM snapshots: an empty
-  `<canvas>` is a replaced element whose default bitmap is
-  transparent, which the trace viewer renders as a checkerboard
-  placeholder masking the page content underneath. A `<div>`
-  composes like any other transparent box. Coordinates come from
-  `locator.boundingBox()`. `boundingBox()` does not wait for
-  actionability/stability the way Playwright's actions do, so on
-  pages with late layout shifts (lazy images, font swaps, deferred
-  hydration above the target) the captured coords can be stale by
-  the time the screenshot is taken — the box ends up framing empty
-  space where the element used to be. This is a known limitation of
-  the fallback path.
+1. **(Optional) scroll the target into view.** Locator actions
+   always scroll — Playwright's own actionability would scroll
+   anyway, so we do it a few ms earlier so the screenshot matches
+   what the action will see. Locator assertions also scroll, with
+   one carve-out: `toBeInViewport()` / `not.toBeInViewport()`,
+   whose outcome depends on viewport position, opt out of the
+   pre-screenshot scroll in `assertion-wrapper.ts`. Every other
+   assertion (`toBeVisible`, `toHaveText`, …) is viewport-position
+   independent, so scrolling is safe.
+2. **Measure the target's bounding box** via `locator.boundingBox()`.
+3. **Inject a `<div>` overlay** at the target's document position —
+   a 4px magenta border with a faint translucent fill
+   (`rgba(255, 0, 255, 0.08)`), drawn page-side via
+   `overlay-helpers.ts`. We use a `<div>` rather than a `<canvas>`
+   because Playwright's trace viewer captures DOM snapshots: an
+   empty `<canvas>` is a replaced element whose default bitmap is
+   transparent, which the trace viewer renders as a checkerboard
+   placeholder masking the page content underneath.
+4. **Capture a viewport screenshot.** On Chromium we go through
+   CDP `Page.captureScreenshot { format: 'png' }` directly —
+   `page.screenshot()` would force the configured viewport via
+   `Emulation.setDeviceMetricsOverride` and visibly resize the OS
+   window in headed mode. On Firefox / WebKit (no CDP) we fall
+   back to `page.screenshot({ path, timeout })`.
+5. **Return a cleanup closure** that removes the `<div>` after the
+   caller's action / assertion completes.
 
-The CDP path also handles `boundingBox()`-failure cases (e.g. a
-detached stash node) by falling back to the JS overlay reusing the
-same per-statement sequence number, so screenshots remain numbered
-contiguously.
+CDP `Overlay.highlightNode` is **not** used. It paints box-model
+regions with colors and has no native "outline around the element"
+mode, so the highlight is invisible at our chosen translucent
+alpha on elements without a CSS border. Going through the `<div>`
+overlay produces a visible frame on every browser without caring
+about the element's CSS.
 
-### Off-viewport targets
+### Known limitation: layout-shift staleness
 
-The capture pipeline takes two different paths to make sure
-off-viewport targets still produce useful screenshots, depending on
-whether the target is the subject of a locator **action** or a
-locator **assertion**:
+`boundingBox()` does not wait for actionability / stability the
+way Playwright's actions do, so on pages with late layout shifts
+(lazy images, font swaps, deferred hydration above the target)
+the captured coords can be stale by the time the screenshot is
+taken — the box ends up framing empty space where the element
+used to be. The pre-screenshot scroll mitigates this by waiting
+for the target to settle into view, but doesn't eliminate it.
 
-- **Locator actions** (`click`, `fill`, `hover`, …) — we call
-  `locator.scrollIntoViewIfNeeded()` **before** the highlight
-  screenshot. This is a no-op for the action's own state because
-  Playwright's actions auto-scroll into view as part of
-  actionability anyway; we are just doing it a few ms earlier so
-  the screenshot matches what the action will see. The screenshot
-  is then a regular viewport capture.
-  - Note: `scrollIntoViewIfNeeded` is intentionally **not** in the
-    patched-actions list (`HIGHLIGHTED_LOCATOR_ACTIONS` in
-    `locator-patch.ts`). Patching it would cause infinite recursion
-    when our own pre-screenshot scroll re-entered the patched
-    method, and the standalone scroll-screenshot is redundant given
-    every other action now scrolls-then-screenshots anyway.
+### `scrollIntoViewIfNeeded` is not patched
 
-- **Locator assertions** (`expect(locator).toBeVisible()`,
-  `.not.toHaveText(…)`, …) — we **do not** scroll, because some
-  assertions are viewport-sensitive: `toBeInViewport()` /
-  `not.toBeInViewport()` would change outcome if the tracer scrolled
-  before they ran. Instead, the screenshot is captured beyond the
-  viewport — `Page.captureScreenshot { captureBeyondViewport: true }`
-  on the CDP path, `page.screenshot({ fullPage: true })` on the JS
-  fallback. The renderer composes the highlight at the element's
-  document position regardless of scroll, so off-viewport assertion
-  targets are still visible in the resulting PNG.
-  - **Caveat:** assertion screenshots can be much larger than action
-    screenshots — they are full-document captures, so for tall pages
-    expect proportionally larger PNGs in `heal-data/`. We accept
-    that cost as a trade for assertion-semantic safety.
+`scrollIntoViewIfNeeded` is intentionally **not** in the
+patched-actions list (`HIGHLIGHTED_LOCATOR_ACTIONS` in
+`locator-patch.ts`). Patching it would cause infinite recursion
+when our own pre-screenshot scroll re-entered the patched method,
+and the standalone scroll-screenshot is redundant given every
+other action now scrolls-then-screenshots anyway.
 
 ### Decoration timeouts (`screenshotMs`)
 
-Both paths cap their per-call locator measurements at 10 seconds
-(`boundingBox` for the JS fallback; `locator.evaluate` for the CDP
-stash/unstash). The same 10-second cap is applied to the
-action-path `scrollIntoViewIfNeeded`, to every CDP `send`, to
-`newCDPSession`, to the `page.screenshot` fallback, and to the
-`page.evaluate` calls inside `drawOverlay` / `removeOverlay`.
-Without these caps, Playwright auto-waits the locator-resolution
-calls for the full configured `actionTimeout`, and CDP itself has
-no protocol-level timeout — a wedged renderer (alert dialog, JS
+Every async the session awaits is capped at 10 seconds:
+`scrollIntoViewIfNeeded`, `boundingBox`, the overlay's
+`page.evaluate` (draw / remove), the CDP `Page.captureScreenshot`
+send, `newCDPSession`, and the `page.screenshot` fallback. Without
+these caps, Playwright auto-waits the locator-resolution calls for
+the full configured `actionTimeout`, and CDP itself has no
+protocol-level timeout — a wedged renderer (alert dialog, JS
 deadlock, hung navigation) could otherwise let screenshot
 decoration outlast the action it is decorating. Decoration must
 always fail-fast so the test fails on the user's actual action,
@@ -136,10 +119,10 @@ not on the tracer's overlay.
 
 Capture is best-effort: if any of these caps fires the rejection
 is silently swallowed, the screenshot is dropped (or, for the
-action-path scroll, the un-scrolled state is captured), any
+pre-screenshot scroll, the un-scrolled state is captured), any
 partially-drawn overlay is still cleaned up via the cleanup
-closure, and the original action proceeds normally. In particular
-the action-path `scrollIntoViewIfNeeded` is wrapped in its own
+closure, and the original action proceeds normally. The
+pre-screenshot `scrollIntoViewIfNeeded` is wrapped in its own
 `try`/`catch` — a slow page that doesn't settle within
 `screenshotMs` produces a viewport-only screenshot of wherever
 the page currently is, rather than failing the test. Playwright's
@@ -149,6 +132,28 @@ act, so a transient slowness in our pre-screenshot scroll never
 turns into a test failure.
 
 The cap value is configurable — see [`configuration.md`](configuration.md).
+
+### Visual regression test
+
+`tests/integration/specs/screenshot-visual.test.ts` covers the pipeline
+end-to-end on real Chromium: one sandbox runs a 6-case Playwright
+spec (action click and assertions, in/off-viewport, plus the
+`toBeInViewport` carve-out) and the test then walks the produced
+`heal-traces/.../screenshots/*.png` and asserts the magenta overlay
+landed at the expected viewport coordinates. Region-based pixel
+sampling, no byte-equal baselines — see the file header for the
+case table.
+
+To eyeball the captures locally:
+
+```sh
+npm run test:integration:visual:dump
+open tmp/visual-dumps/   # one PNG per case, slugified by test title
+```
+
+The dump runs unconditionally before assertions, so a failing case
+still leaves its PNG behind. Set `HEAL_VISUAL_DUMP_DIR=<path>`
+explicitly to dump elsewhere.
 
 ## On-disk layout
 

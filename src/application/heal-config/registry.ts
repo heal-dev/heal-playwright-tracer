@@ -20,6 +20,7 @@
 // multiple hooks from anywhere during the test.
 
 import type { HealTracerConfig } from './types';
+import { log } from '../../util/logger';
 
 let currentConfig: HealTracerConfig = {};
 let teardownHooks: Array<() => void | Promise<void>> = [];
@@ -73,7 +74,7 @@ export async function drainTeardownHooks(): Promise<void> {
     try {
       await hook();
     } catch (err) {
-      console.error('[heal-playwright-tracer] teardown hook failed:', err);
+      log.error('teardown hook failed', err);
     }
   }
 }

@@ -28,6 +28,7 @@
 
 import type { Page } from 'playwright';
 import type { ScreenshotCaptureSession } from './screenshot-capture-session';
+import { log } from '../../util/logger';
 
 // Locator action methods that will be highlighted and screenshotted.
 // User-facing actions only — not queries, not waits, not assertions.
@@ -105,7 +106,7 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
       const session = activeSession;
       const cleanup =
         pg && session
-          ? await session.captureWithHighlight(pg, self, name, { mode: 'action' })
+          ? await session.captureWithHighlight(pg, self, name, { scrollBeforeCapture: true })
           : null;
 
       try {
@@ -114,10 +115,11 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
         if (cleanup) {
           try {
             await cleanup();
-          } catch (_) {
+          } catch (err) {
             // Cleanup is already wrapped in withTimeout inside the
             // session; a rejection here means the page closed,
             // navigated, or the renderer wedged past the cap.
+            log.warn(`overlay cleanup rejected after locator.${name}`, err);
           }
         }
       }

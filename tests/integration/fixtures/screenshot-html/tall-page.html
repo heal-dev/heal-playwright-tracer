@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>screenshot fixture — tall page</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #ffffff;
+        height: 6000px;
+      }
+      button {
+        position: absolute;
+        left: 100px;
+        width: 120px;
+        height: 40px;
+        font: 16px sans-serif;
+        background: #cccccc;
+        border: 1px solid #888888;
+      }
+      #in-viewport {
+        top: 100px;
+      }
+      #off-viewport {
+        top: 5500px;
+      }
+    </style>
+  </head>
+  <body>
+    <button id="in-viewport">in-view</button>
+    <button id="off-viewport">off-view</button>
+  </body>
+</html>
