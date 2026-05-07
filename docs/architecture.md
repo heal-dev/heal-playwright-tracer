@@ -133,6 +133,28 @@ turns into a test failure.
 
 The cap value is configurable — see [`configuration.md`](configuration.md).
 
+### Visual regression test
+
+`tests/integration/specs/screenshot-visual.test.ts` covers the pipeline
+end-to-end on real Chromium: one sandbox runs a 6-case Playwright
+spec (action click and assertions, in/off-viewport, plus the
+`toBeInViewport` carve-out) and the test then walks the produced
+`heal-traces/.../screenshots/*.png` and asserts the magenta overlay
+landed at the expected viewport coordinates. Region-based pixel
+sampling, no byte-equal baselines — see the file header for the
+case table.
+
+To eyeball the captures locally:
+
+```sh
+npm run test:integration:visual:dump
+open tmp/visual-dumps/   # one PNG per case, slugified by test title
+```
+
+The dump runs unconditionally before assertions, so a failing case
+still leaves its PNG behind. Set `HEAL_VISUAL_DUMP_DIR=<path>`
+explicitly to dump elsewhere.
+
 ## On-disk layout
 
 Per (test, attempt), the tracer produces:
