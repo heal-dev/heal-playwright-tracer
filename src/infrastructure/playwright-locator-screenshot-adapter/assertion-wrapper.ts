@@ -37,6 +37,7 @@
 
 import type { Locator, Page } from 'playwright';
 import { getActiveCaptureSession } from './locator-patch';
+import { log } from '../../util/logger';
 
 // Duck-type: a Playwright Locator always has both `.boundingBox` and
 // `.page` as functions. FrameLocator / ElementHandle / Page won't match.
@@ -76,11 +77,19 @@ function wrapAssertion<T extends object>(assertion: T, locator: Locator): T {
           const session = getActiveCaptureSession();
           if (page && session) {
             try {
+              // Scroll the target into view before the screenshot —
+              // mirrors what locator actions already do — except for
+              // `toBeInViewport()` / `not.toBeInViewport()`, which
+              // are the only assertions whose outcome depends on
+              // viewport position. For those we leave scroll alone so
+              // we don't change what the user is asserting.
+              const scrollBeforeCapture = prop !== 'toBeInViewport';
               cleanup = await session.captureWithHighlight(page, locator, `assert-${prop}`, {
-                mode: 'assertion',
+                scrollBeforeCapture,
               });
-            } catch (_) {
+            } catch (err) {
               // Capture is best-effort: never block the assertion.
+              log.warn(`captureWithHighlight rejected for assert-${String(prop)}`, err);
             }
           }
           try {
@@ -89,9 +98,10 @@ function wrapAssertion<T extends object>(assertion: T, locator: Locator): T {
             if (cleanup) {
               try {
                 await cleanup();
-              } catch (_) {
+              } catch (err) {
                 // Cleanup is already capped via withTimeout inside
                 // the session.
+                log.warn(`overlay cleanup rejected after assert-${String(prop)}`, err);
               }
             }
           }
@@ -139,9 +149,10 @@ export function wrapExpect<E extends (...args: unknown[]) => unknown>(origExpect
 
     try {
       Object.defineProperty(wrapped, key, descriptor);
-    } catch (_) {
+    } catch (err) {
       // Some descriptors may be non-configurable on the target; skip
       // them — the caller can still reach them via the original expect.
+      log.warn(`could not copy expect.${String(key)} descriptor onto the wrapper`, err);
     }
   }
 

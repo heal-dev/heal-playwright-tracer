@@ -269,6 +269,53 @@ export default defineConfig({
 > with a stack trace that blames this plugin even though it has never
 > run. If that happens, fix the config format first.
 
+## Debug logging
+
+The tracer uses a unified two-level logger that writes to stderr
+with a consistent prefix so users can grep one or the other:
+
+```
+[heal-playwright-tracer] [error] <message>
+[heal-playwright-tracer] [warn] <message>
+```
+
+- **`[error]`** — real failures the user should see by default
+  (lifecycle setup rejections, projector.finalize timeouts,
+  reporter file-write failures, exporter-factory throws). Always
+  written to stderr.
+- **`[warn]`** — best-effort failures the tracer recovered from
+  (scroll throws, boundingBox null, overlay-cleanup catches,
+  screenshot capture rejects). **Silent unless `HEAL_DEBUG=1`** —
+  without the env var these are noise; with it, they're a
+  diagnostic for "why did the tracer behave this way on this
+  page."
+
+```sh
+HEAL_DEBUG=1 npx playwright test 2>&1 | grep '\[warn\]'   # see only warnings
+HEAL_DEBUG=1 npx playwright test 2>&1 | grep '\[error\]'  # see only errors (always available)
+```
+
+Common scenarios surfaced by `HEAL_DEBUG=1`:
+
+- `scrollIntoViewIfNeeded failed before <action> screenshot` —
+  the pre-screenshot scroll didn't settle within `screenshotMs`.
+  Capture proceeds with the un-scrolled state; the user's action
+  still gets the full `actionTimeout` to scroll and act.
+- `measureBox boundingBox threw — skipping highlight overlay` —
+  target detached or page navigated before we could measure.
+- `drawOverlay threw — skipping highlight screenshot` — the
+  page-side overlay injection failed (typically because the page
+  navigated mid-flight).
+- `takeScreenshot threw after overlay was drawn` — the screenshot
+  call itself rejected (CDP timeout, page closed). Cleanup still
+  removes the overlay.
+- `newCDPSession failed; falling back to page.screenshot for this
+page` — one-time per page when CDP isn't available
+  (Firefox/WebKit). Capture continues via Playwright's own
+  `page.screenshot`.
+- `overlay cleanup rejected after locator.<action>` — page
+  navigated/closed while we were trying to remove the overlay.
+
 ## Print per-test artifact paths
 
 Set `HEAL_PRINT_ARTIFACT_PATHS=1` to print the test's output

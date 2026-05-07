@@ -54,11 +54,46 @@ function runQuiet(cmd: string, cwd: string): string {
     .trim();
 }
 
+// Routes:
+//   `/`                        → SANDBOX_HTML (used by every existing
+//                                scenario test).
+//   `/screenshot-html/*.html`  → static files from
+//                                `tests/integration/fixtures/screenshot-html/`,
+//                                used by the screenshot-visual integration
+//                                tests for deterministic button positions.
+//
+// Anything else returns 404.
 function startHttpServer(): Promise<{ server: http.Server; baseUrl: string }> {
+  const screenshotHtmlDir = path.resolve(__dirname, 'fixtures', 'screenshot-html');
   return new Promise((resolve) => {
-    const server = http.createServer((_req, res) => {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-      res.end(SANDBOX_HTML);
+    const server = http.createServer((req, res) => {
+      const url = req.url ?? '/';
+      if (url === '/' || url.startsWith('/?')) {
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+        res.end(SANDBOX_HTML);
+        return;
+      }
+      if (url.startsWith('/screenshot-html/') && url.endsWith('.html')) {
+        const name = url.slice('/screenshot-html/'.length);
+        // Reject any path-traversal attempt — only flat filenames allowed.
+        if (name.includes('/') || name.includes('..')) {
+          res.writeHead(400);
+          res.end();
+          return;
+        }
+        const filePath = path.join(screenshotHtmlDir, name);
+        try {
+          const body = fs.readFileSync(filePath);
+          res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+          res.end(body);
+        } catch {
+          res.writeHead(404);
+          res.end();
+        }
+        return;
+      }
+      res.writeHead(404);
+      res.end();
     });
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;

@@ -4,7 +4,7 @@
  * Please see the LICENSE file at the root of this repository
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -335,28 +335,24 @@ describe('HealTracerReporter — crash rescue', () => {
     expect(last1.error?.name).toBe('OutOfMemoryError');
   });
 
-  it('swallows append errors and logs to process.stderr', () => {
+  it('swallows append errors and logs them via the unified logger', () => {
     setupTest();
-    const captured: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: string | Uint8Array) => {
-      captured.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-      return true;
-    }) as typeof process.stderr.write;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    try {
-      const reporter = newReporter({
-        appendFile: () => {
-          throw new Error('disk full');
-        },
-      });
-      reporter.onTestEnd(fakeTestCase(), fakeResult({ duration: 1 }));
-    } finally {
-      process.stderr.write = origWrite;
-    }
+    const reporter = newReporter({
+      appendFile: () => {
+        throw new Error('disk full');
+      },
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ duration: 1 }));
 
-    expect(captured.join('')).toContain('failed to append synthetic test-result');
-    expect(captured.join('')).toContain('disk full');
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(messages.some((m: string) => m.includes('failed to append synthetic test-result'))).toBe(
+      true,
+    );
+    expect(messages.some((m: string) => m.includes('disk full'))).toBe(true);
   });
 });
 
@@ -583,8 +579,7 @@ describe('HealTracerReporter — onRescue hook', () => {
   it('does NOT invoke onRescue when the disk append fails', async () => {
     setupTest();
     let called = false;
-    const origWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = (() => true) as typeof process.stderr.write;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     try {
       const reporter = newReporter({
@@ -598,31 +593,25 @@ describe('HealTracerReporter — onRescue hook', () => {
       reporter.onTestEnd(fakeTestCase(), fakeResult({ duration: 1 }));
       await Promise.resolve();
     } finally {
-      process.stderr.write = origWrite;
+      errSpy.mockRestore();
     }
     expect(called).toBe(false);
   });
 
-  it('swallows onRescue hook errors and logs them to process.stderr', async () => {
+  it('swallows onRescue hook errors and logs them via the unified logger', async () => {
     setupTest();
-    const captured: string[] = [];
-    const origWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk: string | Uint8Array) => {
-      captured.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
-      return true;
-    }) as typeof process.stderr.write;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    try {
-      const reporter = newReporter({
-        onRescue: () => Promise.reject(new Error('collector unreachable')),
-      });
-      reporter.onTestEnd(fakeTestCase(), fakeResult({ duration: 1 }));
-      for (let i = 0; i < 5; i++) await Promise.resolve();
-    } finally {
-      process.stderr.write = origWrite;
-    }
+    const reporter = newReporter({
+      onRescue: () => Promise.reject(new Error('collector unreachable')),
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ duration: 1 }));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
 
-    expect(captured.join('')).toContain('onRescue hook failed');
-    expect(captured.join('')).toContain('collector unreachable');
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(messages.some((m: string) => m.includes('onRescue hook failed'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('collector unreachable'))).toBe(true);
   });
 });

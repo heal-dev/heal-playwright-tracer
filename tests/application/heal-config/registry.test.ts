@@ -86,9 +86,11 @@ describe('heal-config registry', () => {
 
       await expect(drainTeardownHooks()).resolves.toBeUndefined();
       expect(after).toHaveBeenCalledTimes(1);
+      // The unified logger formats as
+      // `[heal-playwright-tracer] [error] <msg>\n<stack>` in a
+      // single argument.
       expect(errSpy).toHaveBeenCalledWith(
-        '[heal-playwright-tracer] teardown hook failed:',
-        expect.any(Error),
+        expect.stringMatching(/^\[heal-playwright-tracer\] \[error\] teardown hook failed/),
       );
       errSpy.mockRestore();
     });

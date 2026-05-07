@@ -83,6 +83,7 @@ import type {
   StatementPreProcessorContext,
 } from '../heal-config';
 import { withTimeout } from '../../util/with-timeout';
+import { log } from '../../util/logger';
 import { wireAllPages, type WireableSession } from './wire-all-pages';
 import { HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
@@ -119,7 +120,7 @@ function buildHealTraceExporter(ndjsonPath: string, ctx: HealTracerTestContext):
     try {
       legs.push(factory(ctx));
     } catch (err) {
-      console.error('[heal-playwright-tracer] exporter factory failed:', err);
+      log.error('exporter factory failed', err);
     }
   }
 
@@ -345,7 +346,7 @@ export const test = base.extend<TraceFixtures>({
           );
           activeLifecycles.push(lc);
         } catch (err) {
-          console.error('[heal-playwright-tracer] lifecycle setup failed:', err);
+          log.error('lifecycle setup failed', err);
         }
       }
 
@@ -360,7 +361,7 @@ export const test = base.extend<TraceFixtures>({
         try {
           await withTimeout(drainTeardownHooks(), lifecycleTimeoutMs, 'onTestTeardown hooks');
         } catch (err) {
-          console.error('[heal-playwright-tracer] teardown hooks did not finish:', err);
+          log.error('teardown hooks did not finish', err);
         }
 
         // Teardown in reverse order (LIFO): the last lifecycle to set
@@ -374,7 +375,7 @@ export const test = base.extend<TraceFixtures>({
               'lifecycle.teardown',
             );
           } catch (err) {
-            console.error('[heal-playwright-tracer] lifecycle teardown failed:', err);
+            log.error('lifecycle teardown failed', err);
           }
         }
 
@@ -402,14 +403,14 @@ export const test = base.extend<TraceFixtures>({
           try {
             restoreWiring();
           } catch (err) {
-            console.error('[heal-playwright-tracer] wireAllPages.restore failed:', err);
+            log.error('wireAllPages.restore failed', err);
           }
         }
         if (consoleSession) {
           try {
             await withTimeout(consoleSession.close(), lifecycleTimeoutMs, 'console.close');
           } catch (err) {
-            console.error('[heal-playwright-tracer] console.close did not finish:', err);
+            log.error('console.close did not finish', err);
           }
         }
         if (networkSession) {
@@ -417,7 +418,7 @@ export const test = base.extend<TraceFixtures>({
           try {
             await withTimeout(networkSession.stop(failed), lifecycleTimeoutMs, 'network.stop');
           } catch (err) {
-            console.error('[heal-playwright-tracer] network.stop did not finish:', err);
+            log.error('network.stop did not finish', err);
           }
         }
 
@@ -457,7 +458,7 @@ export const test = base.extend<TraceFixtures>({
           // and exporter close didn't complete in time) but the
           // test itself has already finished — keep going so
           // downstream registry cleanup still runs.
-          console.error('[heal-playwright-tracer] projector.finalize did not finish:', err);
+          log.error('projector.finalize did not finish', err);
         }
 
         new ArtifactSummaryPrinter(testDir).print({
