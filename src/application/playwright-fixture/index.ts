@@ -64,7 +64,6 @@ import { StatementProjector } from '../../domain/trace-event-recorder/service/pr
 import { NdjsonExporter } from '../../infrastructure/ndjson-exporter-adapter';
 import { CompositeHealTraceExporter } from '../../domain/trace-event-recorder/service';
 import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/heal-trace-exporter';
-import type { TestSidecarsRecord } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 
 import { PlaywrightStepTrackingAdapter } from '../../infrastructure/playwright-step-tracking-adapter';
 import { PlaywrightTestContextAdapter } from '../../infrastructure/playwright-test-context-adapter';
@@ -112,12 +111,8 @@ type TraceFixtures = {
   _traceAuto: void;
 };
 
-function buildHealTraceExporter(
-  ndjsonPath: string,
-  ctx: HealTracerTestContext,
-  prelude: TestSidecarsRecord[],
-): HealTraceExporter {
-  const legs: HealTraceExporter[] = [new NdjsonExporter(ndjsonPath, { prelude })];
+function buildHealTraceExporter(ndjsonPath: string, ctx: HealTracerTestContext): HealTraceExporter {
+  const legs: HealTraceExporter[] = [new NdjsonExporter(ndjsonPath)];
 
   const { exporters = [] } = getTracerConfig();
   for (const factory of exporters) {
@@ -225,25 +220,12 @@ export const test = base.extend<TraceFixtures>({
         ? layout.consoleNdjsonPath(captured.testId, captured.attempt)
         : undefined;
 
-      const sidecarRecord: TestSidecarsRecord | undefined =
-        networkPath || consolePath
-          ? {
-              kind: 'test-sidecars',
-              ...(networkPath ? { network: HealTracesLayout.NETWORK_NDJSON_FILENAME } : {}),
-              ...(consolePath ? { console: HealTracesLayout.CONSOLE_NDJSON_FILENAME } : {}),
-            }
-          : undefined;
-
       // Fresh output pipeline per test: build a HealTraceExporter (default
       // NDJSON leg + any user-configured exporters), wrap it in a
       // projector, install on the recorder, then reset() — which
       // clears projector state and emits the test-header record via
       // the buildMetaEvent call inside the recorder.
-      const output = buildHealTraceExporter(
-        ndjsonPath,
-        tracerCtx,
-        sidecarRecord ? [sidecarRecord] : [],
-      );
+      const output = buildHealTraceExporter(ndjsonPath, tracerCtx);
       const projector = new StatementProjector(output);
       setExporter(projector);
       reset();

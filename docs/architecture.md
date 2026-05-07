@@ -165,7 +165,6 @@ heal-traces/<executionId>/<playwrightTestId>/<attempt>/
 ```
 
 `heal-traces.ndjson` is the canonical timeline: `test-header`,
-optional `test-sidecars` (listing the sibling NDJSON filenames),
 zero or more `statement` records, exactly one `test-result`, and an
 optional `test-attachments` appended by the reporter.
 

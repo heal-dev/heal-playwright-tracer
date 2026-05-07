@@ -12,8 +12,7 @@
 //
 // This is the only test that exercises the full chain — fixture
 // wiring, browser.newContext patches, BrowserContext event
-// listeners, NDJSON write path, sidecar prelude on the main file —
-// against a real Playwright runtime.
+// listeners, NDJSON write path — against a real Playwright runtime.
 
 import { beforeAll, describe, it, expect } from 'vitest';
 import * as fs from 'fs';
@@ -82,16 +81,6 @@ beforeAll(async () => {
 });
 
 describe('integration: network + console sidecars', () => {
-  it('writes a `test-sidecars` record into heal-traces.ndjson naming both sidecar files', () => {
-    const sidecar = artifacts.mainRecords.find((r) => r.kind === 'test-sidecars');
-    expect(sidecar).toBeDefined();
-    expect(sidecar).toMatchObject({
-      kind: 'test-sidecars',
-      network: 'heal-network.ndjson',
-      console: 'heal-console.ndjson',
-    });
-  });
-
   it('produces both sidecar files on disk', () => {
     expect(fs.existsSync(path.join(artifacts.testDir, 'heal-network.ndjson'))).toBe(true);
     expect(fs.existsSync(path.join(artifacts.testDir, 'heal-console.ndjson'))).toBe(true);
