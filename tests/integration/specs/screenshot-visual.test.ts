@@ -185,7 +185,7 @@ describe('screenshot decoration — visual regression', () => {
       for (const cap of captures.values()) {
         fs.copyFileSync(cap.pngPath, path.join(absDump, `${slugify(cap.testTitle)}.png`));
       }
-       
+
       console.log(`[visual-dump] copied ${captures.size} PNGs to ${absDump}`);
     }
   }, 600_000);
