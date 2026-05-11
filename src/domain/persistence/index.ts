@@ -10,5 +10,7 @@ export {
   type ExecutionTotals,
   type ExecutionManifest,
   type ExecutionTestEntry,
+  type AttemptEntry,
+  type FailingStatement,
 } from './execution-history-schema';
 export type { TestStatus } from './test-status';
