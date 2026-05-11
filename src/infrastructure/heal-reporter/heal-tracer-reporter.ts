@@ -59,6 +59,7 @@ import type {
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 import {
   EXECUTION_RECORD_KIND,
+  type AttemptEntry,
   type ExecutionManifest,
   type ExecutionRecord,
   type ExecutionTestEntry,
@@ -67,6 +68,7 @@ import {
 } from '../../domain/persistence';
 import { HealTracesLayout, getExecutionIdSource, resolveExecutionId } from '../heal-traces-layout';
 import { CrashErrorClassifier } from './crash-error-classifier';
+import { FailingStatementFinder } from './failing-statement-finder';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
 import { log } from '../../util/logger';
 
@@ -131,6 +133,7 @@ export type RescueHook = (record: TestResultRecord, ctx: RescueContext) => void 
 export interface HealTracerReporterDeps {
   classifier?: CrashErrorClassifier;
   inspector?: NdjsonTailInspector;
+  failingStatementFinder?: FailingStatementFinder;
   /**
    * Seam for tests — defaults to `fs.appendFileSync`. Kept sync so
    * the synthetic line hits disk before the reporter returns, same
@@ -152,6 +155,7 @@ export function healPendingRegistryPath(
 export class HealTracerReporter implements Reporter {
   private readonly classifier: CrashErrorClassifier;
   private readonly inspector: NdjsonTailInspector;
+  private readonly failingStatementFinder: FailingStatementFinder;
   private readonly appendFile: (path: string, data: string) => void;
   private readonly onRescue: RescueHook | null;
   private readonly stderrByWorker = new Map<number, string[]>();
@@ -166,11 +170,14 @@ export class HealTracerReporter implements Reporter {
   private rootDir = '';
   private playwrightVersion: string | undefined;
   private gitInfo: ExecutionRecord['git'];
-  private readonly testEntries: ExecutionTestEntry[] = [];
+  // Keyed by playwrightTestId so retries fold into the same test entry.
+  // Insertion order = first-seen test order, which the manifest preserves.
+  private readonly testEntriesById = new Map<string, ExecutionTestEntry>();
 
   constructor(deps: HealTracerReporterDeps = {}) {
     this.classifier = deps.classifier ?? new CrashErrorClassifier();
     this.inspector = deps.inspector ?? new NdjsonTailInspector();
+    this.failingStatementFinder = deps.failingStatementFinder ?? new FailingStatementFinder();
     this.appendFile = deps.appendFile ?? ((p, d) => fs.appendFileSync(p, d, { encoding: 'utf8' }));
     this.onRescue = deps.onRescue ?? null;
   }
@@ -228,11 +235,14 @@ export class HealTracerReporter implements Reporter {
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
-    this.captureTestEntry(test, result);
     const traceCtx = this.resolveTraceContext(test, result);
-    if (!traceCtx) return;
-    if (!fs.existsSync(traceCtx.ndjsonPath)) {
-      this.cleanupRegistry(test, result);
+
+    // Tracer not wired for this test (no registry entry) or the
+    // worker never started a trace file — record what Playwright
+    // already knows and stop. No failing-statement source on disk.
+    if (!traceCtx || !fs.existsSync(traceCtx.ndjsonPath)) {
+      this.captureAttempt(test, result, null, null);
+      if (traceCtx) this.cleanupRegistry(test, result);
       return;
     }
 
@@ -250,6 +260,7 @@ export class HealTracerReporter implements Reporter {
         this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
       } catch (err) {
         log.error(`failed to append synthetic test-result to ${traceCtx.ndjsonPath}`, err);
+        this.captureAttempt(test, result, null, null);
         this.cleanupRegistry(test, result);
         return;
       }
@@ -267,10 +278,9 @@ export class HealTracerReporter implements Reporter {
       this.appendFile(traceCtx.ndjsonPath, JSON.stringify(attachmentsRecord) + '\n');
     } catch (err) {
       log.error(`failed to append test-attachments to ${traceCtx.ndjsonPath}`, err);
-      this.cleanupRegistry(test, result);
-      return;
     }
 
+    this.captureAttempt(test, result, traceCtx.ndjsonPath, rescuedRecord);
     this.cleanupRegistry(test, result);
 
     if (rescuedRecord) {
@@ -440,7 +450,45 @@ export class HealTracerReporter implements Reporter {
       });
   }
 
-  private captureTestEntry(test: TestCase, result: TestResult): void {
+  /**
+   * Upsert the per-test entry for `test` and append an attempt slice
+   * built from `result`. When `ndjsonPath` is non-null and the
+   * attempt did not pass, scans the file for the deepest threw
+   * statement and attaches it as `failingStatement` + `error`. A
+   * `rescuedRecord` (synthesized by the rescue path) supplies
+   * `error` when no statement-level threw is present.
+   */
+  private captureAttempt(
+    test: TestCase,
+    result: TestResult,
+    ndjsonPath: string | null,
+    rescuedRecord: TestResultRecord | null,
+  ): void {
+    const entry = this.upsertTestEntry(test);
+    const attempt: AttemptEntry = {
+      attempt: result.retry + 1,
+      status: this.mapTestStatus(result.status),
+      startedAt: result.startTime instanceof Date ? result.startTime.getTime() : Date.now(),
+      durationMs: result.duration,
+    };
+
+    if (attempt.status !== 'passed' && attempt.status !== 'skipped') {
+      const found = ndjsonPath ? this.failingStatementFinder.find(ndjsonPath) : null;
+      if (found) {
+        attempt.failingStatement = found.statement;
+        attempt.error = found.error;
+      } else if (rescuedRecord?.error) {
+        attempt.error = rescuedRecord.error;
+      }
+    }
+
+    entry.attempts.push(attempt);
+  }
+
+  private upsertTestEntry(test: TestCase): ExecutionTestEntry {
+    const existing = this.testEntriesById.get(test.id);
+    if (existing) return existing;
+
     const titlePath =
       typeof (test as unknown as { titlePath?: () => string[] }).titlePath === 'function'
         ? (test as unknown as { titlePath: () => string[] }).titlePath()
@@ -450,17 +498,17 @@ export class HealTracerReporter implements Reporter {
       (test as unknown as { parent?: { project?: () => { name?: string } } }).parent?.project?.()
         ?.name ?? '';
 
-    this.testEntries.push({
+    const entry: ExecutionTestEntry = {
       playwrightTestId: test.id,
       title: test.title,
       titlePath,
       file,
       project,
-      attempt: result.retry + 1,
-      status: this.mapTestStatus(result.status),
-      durationMs: result.duration,
-      startedAt: result.startTime instanceof Date ? result.startTime.getTime() : Date.now(),
-    });
+      attempts: [],
+    };
+    this.testEntriesById.set(test.id, entry);
+
+    return entry;
   }
 
   private mapTestStatus(s: TestResult['status']): TestStatus {
@@ -481,7 +529,8 @@ export class HealTracerReporter implements Reporter {
 
     const layout = new HealTracesLayout(this.rootDir, this.executionId);
     const endedAt = Date.now();
-    const totals = computeTotals(this.testEntries);
+    const tests = Array.from(this.testEntriesById.values());
+    const totals = computeTotals(tests);
 
     const manifest: ExecutionManifest = {
       executionId: this.executionId,
@@ -492,7 +541,7 @@ export class HealTracerReporter implements Reporter {
       ...(this.gitInfo ? { git: this.gitInfo } : {}),
       ...(this.playwrightVersion ? { playwrightVersion: this.playwrightVersion } : {}),
       totals,
-      tests: this.testEntries,
+      tests,
     };
 
     const record: ExecutionRecord = {
@@ -523,9 +572,12 @@ export class HealTracerReporter implements Reporter {
   }
 }
 
+// Per-attempt totals: each retry counts as a separate row, matching
+// the pre-grouping semantics. A flaky test that fails-then-passes
+// surfaces as 1 passed + 1 failed against `tests: 2`.
 function computeTotals(entries: ExecutionTestEntry[]): ExecutionTotals {
   const totals: ExecutionTotals = {
-    tests: entries.length,
+    tests: 0,
     passed: 0,
     failed: 0,
     timedOut: 0,
@@ -533,12 +585,15 @@ function computeTotals(entries: ExecutionTestEntry[]): ExecutionTotals {
     interrupted: 0,
   };
   for (const e of entries) {
-    if (e.status === 'passed') totals.passed += 1;
-    else if (e.status === 'failed') totals.failed += 1;
-    else if (e.status === 'timedOut') totals.timedOut += 1;
-    else if (e.status === 'skipped') totals.skipped += 1;
-    else if (e.status === 'interrupted') totals.interrupted += 1;
-    // 'unknown' counts toward `tests` but not any per-status bucket.
+    for (const a of e.attempts) {
+      totals.tests += 1;
+      if (a.status === 'passed') totals.passed += 1;
+      else if (a.status === 'failed') totals.failed += 1;
+      else if (a.status === 'timedOut') totals.timedOut += 1;
+      else if (a.status === 'skipped') totals.skipped += 1;
+      else if (a.status === 'interrupted') totals.interrupted += 1;
+      // 'unknown' counts toward `tests` but not any per-status bucket.
+    }
   }
   return totals;
 }
