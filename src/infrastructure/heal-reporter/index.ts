@@ -20,6 +20,8 @@ export type {
 export { CrashErrorClassifier } from './crash-error-classifier';
 export type { TestInfoErrorLike } from './crash-error-classifier';
 export { NdjsonTailInspector } from './ndjson-tail-inspector';
+export { FailingStatementFinder } from './failing-statement-finder';
+export type { FoundFailure } from './failing-statement-finder';
 
 // Default export so users can register the reporter with the terse
 // `reporter: [['@heal-dev/heal-playwright-tracer/reporter']]` form,
