@@ -21,6 +21,7 @@
 // the reporter, not by the in-worker tracer, and capture cross-test
 // run-level state.
 
+import type { StatementError } from '../trace-event-recorder/model/statement-trace-schema';
 import type { TestStatus } from './test-status';
 
 /** Record kind — discriminator for executions.ndjson lines. */
@@ -88,8 +89,49 @@ export interface ExecutionTestEntry {
   titlePath: string[];
   file: string;
   project: string;
+  /**
+   * One entry per Playwright retry, ordered by `attempt` ascending.
+   * Always non-empty — a test that never ran has no entry at all.
+   */
+  attempts: AttemptEntry[];
+}
+
+/**
+ * Per-(test, attempt) execution slice. `failingStatement` and
+ * `error` are only set when the attempt did not pass:
+ *
+ *   - Both present: the in-test failure was located to a specific
+ *     `statement` whose `status === 'threw'`.
+ *   - Only `error` present: the worker crashed before any statement
+ *     threw (rescued path — error is synthesized by the reporter).
+ *   - Neither present: the attempt passed, was skipped, or no
+ *     statement-level error was found on disk.
+ */
+export interface AttemptEntry {
+  /** 1-indexed attempt number = Playwright's `result.retry + 1`. */
   attempt: number;
   status: TestStatus;
-  durationMs: number;
   startedAt: number;
+  durationMs: number;
+  failingStatement?: FailingStatement;
+  error?: StatementError;
+}
+
+/**
+ * Minimal locator for the statement that threw. Mirrors a subset of
+ * `Statement` (statement-trace-schema) — just enough for the viewer
+ * to deep-link and render a one-line preview without re-reading
+ * `heal-traces.ndjson`.
+ */
+export interface FailingStatement {
+  /** Contiguous per-test execution-order index from `Statement.index`. */
+  index: number;
+  file: string;
+  line: number;
+  endLine: number;
+  /** Truncated source snippet (already shortened by the tracer). */
+  source: string;
+  scope: string;
+  step: string | null;
+  stepPath: string[] | null;
 }

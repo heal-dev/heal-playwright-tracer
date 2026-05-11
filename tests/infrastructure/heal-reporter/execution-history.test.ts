@@ -71,6 +71,41 @@ function fakeResult(overrides: Partial<TestResult> = {}): TestResult {
   } as unknown as TestResult;
 }
 
+interface NdjsonSetup {
+  executionId: string;
+  testId: string;
+  attempt: number;
+  /** Raw heal-traces.ndjson lines to write (already JSON-stringifyable). */
+  lines: unknown[];
+}
+
+/**
+ * Stages a heal-traces.ndjson under heal-traces/<exec>/<tid>/<attempt>/
+ * and the matching .heal-pending registry entry so onTestEnd resolves
+ * the trace context. Returns the ndjson path for later assertions.
+ */
+function stageNdjson(s: NdjsonSetup): string {
+  const dir = path.join(tmpDir, 'heal-traces', s.executionId, s.testId, String(s.attempt));
+  fs.mkdirSync(dir, { recursive: true });
+  const ndjsonPath = path.join(dir, 'heal-traces.ndjson');
+  fs.writeFileSync(ndjsonPath, s.lines.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+
+  const pendingDir = path.join(projectOutputDir, '.heal-pending');
+  fs.mkdirSync(pendingDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(pendingDir, `${s.testId}-${s.attempt}.json`),
+    JSON.stringify({
+      ndjsonPath,
+      rootDir: dir,
+      playwrightOutputDir: projectOutputDir,
+      executionId: s.executionId,
+    }),
+    'utf8',
+  );
+
+  return ndjsonPath;
+}
+
 describe('HealTracerReporter — executionId propagation', () => {
   it('on a generated executionId, sets HEAL_EXECUTION_ID so workers inherit', async () => {
     delete process.env.HEAL_EXECUTION_ID;
@@ -119,9 +154,267 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
       title: 'first',
       project: 'chromium',
       file: '/repo/x.spec.ts',
+    });
+    expect(manifest.tests[0].attempts).toHaveLength(1);
+    expect(manifest.tests[0].attempts[0]).toMatchObject({
       attempt: 1,
       status: 'passed',
     });
+    expect(manifest.tests[0].attempts[0].failingStatement).toBeUndefined();
+    expect(manifest.tests[0].attempts[0].error).toBeUndefined();
+  });
+
+  it('groups retry attempts of the same test under a single entry', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-retry';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    const test = fakeTestCase({ id: 'tid-flaky', title: 'flaky' });
+    reporter.onTestEnd?.(test, fakeResult({ status: 'failed', retry: 0 }));
+    reporter.onTestEnd?.(test, fakeResult({ status: 'passed', retry: 1 }));
+
+    reporter.onEnd?.();
+
+    const manifestPath = path.join(tmpDir, 'heal-traces', 'exec-retry', 'execution.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExecutionManifest;
+    expect(manifest.tests).toHaveLength(1);
+    expect(manifest.tests[0].playwrightTestId).toBe('tid-flaky');
+    expect(
+      manifest.tests[0].attempts.map((a) => ({ attempt: a.attempt, status: a.status })),
+    ).toEqual([
+      { attempt: 1, status: 'failed' },
+      { attempt: 2, status: 'passed' },
+    ]);
+    // Per-attempt totals: each retry counts toward `tests`.
+    expect(manifest.totals).toMatchObject({ tests: 2, passed: 1, failed: 1 });
+  });
+
+  it('populates failingStatement + error from the deepest threw leaf in heal-traces.ndjson', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-failing';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    const stmt = (over: Record<string, unknown>) => ({
+      seq: 1,
+      index: 0,
+      file: 'x.spec.ts',
+      line: 4,
+      endLine: 4,
+      kind: 'CallExpression',
+      scope: 'root',
+      source: 'noop()',
+      hasAwait: false,
+      step: null,
+      stepPath: null,
+      status: 'ok',
+      duration: 1,
+      t: 0,
+      children: [],
+      ...over,
+    });
+    stageNdjson({
+      executionId: 'exec-failing',
+      testId: 'tid-fail',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-failing' } },
+        {
+          kind: 'statement',
+          statement: stmt({
+            status: 'threw',
+            source: 'await page.locator("#go").click()',
+            error: { message: 'outer' },
+            children: [
+              stmt({
+                index: 1,
+                status: 'threw',
+                source: 'page.locator("#go").click()',
+                error: { message: 'locator timeout', isPlaywrightError: true },
+              }),
+            ],
+          }),
+        },
+        { kind: 'test-result', status: 'failed', duration: 5 },
+      ],
+    });
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-fail', title: 'fails on click' }),
+      fakeResult({ status: 'failed', retry: 0 }),
+    );
+    reporter.onEnd?.();
+
+    const manifestPath = path.join(tmpDir, 'heal-traces', 'exec-failing', 'execution.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.failingStatement).toMatchObject({
+      index: 1,
+      file: 'x.spec.ts',
+      line: 4,
+      source: 'page.locator("#go").click()',
+    });
+    expect(attempt.error).toMatchObject({
+      message: 'locator timeout',
+      isPlaywrightError: true,
+    });
+  });
+
+  it('on a failed test with no registry entry, captures the attempt without failingStatement/error', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-noreg';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    reporter.onTestEnd?.(fakeTestCase({ id: 'tid-x' }), fakeResult({ status: 'failed' }));
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-noreg', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.status).toBe('failed');
+    expect(attempt.failingStatement).toBeUndefined();
+    expect(attempt.error).toBeUndefined();
+  });
+
+  it('does not invoke the finder on skipped attempts', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-skip';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    // Stage an NDJSON that DOES contain a threw statement — but
+    // because the attempt's status is `skipped`, the reporter must
+    // not look at it.
+    stageNdjson({
+      executionId: 'exec-skip',
+      testId: 'tid-skip',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-skip' } },
+        {
+          kind: 'statement',
+          statement: {
+            seq: 1,
+            index: 0,
+            file: 'x.spec.ts',
+            line: 1,
+            endLine: 1,
+            kind: 'CallExpression',
+            scope: 'root',
+            source: 'boom()',
+            hasAwait: false,
+            step: null,
+            stepPath: null,
+            status: 'threw',
+            duration: 1,
+            t: 0,
+            error: { message: 'should-not-surface' },
+            children: [],
+          },
+        },
+        { kind: 'test-result', status: 'skipped', duration: 0 },
+      ],
+    });
+
+    reporter.onTestEnd?.(fakeTestCase({ id: 'tid-skip' }), fakeResult({ status: 'skipped' }));
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-skip', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.status).toBe('skipped');
+    expect(attempt.failingStatement).toBeUndefined();
+    expect(attempt.error).toBeUndefined();
+  });
+
+  it('on a crash rescue with no threw statement, falls back to the rescued record error', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-crash';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    // NDJSON has only a header — no statements, no test-result.
+    // The reporter must synthesize a test-result (rescue path) and
+    // the finder must then return null, so the attempt error comes
+    // from the synthetic record.
+    stageNdjson({
+      executionId: 'exec-crash',
+      testId: 'tid-crash',
+      attempt: 1,
+      lines: [{ kind: 'test-header', test: { executionId: 'exec-crash' } }],
+    });
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-crash' }),
+      fakeResult({
+        status: 'failed',
+        errors: [{ message: 'Worker process exited with code 137' }],
+      } as Partial<TestResult>),
+    );
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-crash', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.failingStatement).toBeUndefined();
+    expect(attempt.error).toBeDefined();
+    expect(attempt.error?.message).toMatch(/worker/i);
+  });
+
+  it('on a crash rescue with a pre-crash threw statement, prefers the statement-level error over the rescued one', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-crash-pre';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    // NDJSON contains a threw statement BEFORE the worker died —
+    // no test-result terminator. The reporter rescues, then the
+    // finder picks up the real failure leaf; that wins over the
+    // synthesized rescue error.
+    stageNdjson({
+      executionId: 'exec-crash-pre',
+      testId: 'tid-precrash',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-crash-pre' } },
+        {
+          kind: 'statement',
+          statement: {
+            seq: 1,
+            index: 4,
+            file: 'x.spec.ts',
+            line: 7,
+            endLine: 7,
+            kind: 'CallExpression',
+            scope: 'root',
+            source: 'page.evaluate(blow_up)',
+            hasAwait: true,
+            step: null,
+            stepPath: null,
+            status: 'threw',
+            duration: 1,
+            t: 0,
+            error: { message: 'real user error' },
+            children: [],
+          },
+        },
+      ],
+    });
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-precrash' }),
+      fakeResult({
+        status: 'failed',
+        errors: [{ message: 'Worker process exited with code 137' }],
+      } as Partial<TestResult>),
+    );
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-crash-pre', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.failingStatement?.index).toBe(4);
+    expect(attempt.error?.message).toBe('real user error');
   });
 
   it('appends one ExecutionRecord line per run to executions.ndjson', async () => {
