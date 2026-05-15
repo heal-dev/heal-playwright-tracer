@@ -85,6 +85,7 @@ describe('locator-screenshots', () => {
     expect(result).toBe('clicked');
     const names = log.map((c) => c.name);
     expect(names).toEqual([
+      'page.evaluate', // wait for page idle (fonts.ready + rAF)
       'locator.boundingBox',
       'page.evaluate', // draw overlay
       'page.screenshot',
@@ -137,8 +138,14 @@ describe('locator-screenshots', () => {
     await loc.click();
 
     // No overlay, no screenshot, no stamp — but the action still ran.
+    // The page-idle wait runs before measureBox, so its page.evaluate
+    // is present even though capture bails on the null box.
     expect(screenshotPaths).toEqual([]);
-    expect(log.map((c) => c.name)).toEqual(['locator.boundingBox', 'locator.click']);
+    expect(log.map((c) => c.name)).toEqual([
+      'page.evaluate', // wait for page idle
+      'locator.boundingBox',
+      'locator.click',
+    ]);
     expect(mockSetScreenshot).not.toHaveBeenCalled();
   });
 
@@ -298,9 +305,12 @@ describe('locator-screenshots', () => {
     const loc = new FakeLocator();
     await loc.click();
 
-    // Scroll happens before any other capture step.
+    // Scroll happens before any other capture step; the page-idle
+    // wait sits between the scroll and the measure so the post-scroll
+    // layout has settled before we screenshot.
     expect(log.map((c) => c.name)).toEqual([
       'locator.scrollIntoViewIfNeeded',
+      'page.evaluate', // wait for page idle
       'locator.boundingBox',
       'page.evaluate', // draw overlay
       'page.screenshot',
@@ -478,8 +488,10 @@ describe('wrapExpect — locator assertion screenshots', () => {
     expect(result).toBe('ok');
     // The default fake locator has no `scrollIntoViewIfNeeded`, so
     // the optional pre-screenshot scroll is skipped. The flow is
-    // measure → draw overlay → screenshot → remove overlay.
+    // wait-for-idle → measure → draw overlay → screenshot → remove
+    // overlay.
     expect(log.map((c) => c.name)).toEqual([
+      'page.evaluate', // wait for page idle
       'locator.boundingBox',
       'page.evaluate', // draw overlay
       'page.screenshot',
@@ -537,11 +549,11 @@ describe('wrapExpect — locator assertion screenshots', () => {
 
     await expect((assertion.toBeVisible as () => Promise<unknown>)()).rejects.toThrow('boom');
 
-    // Two page.evaluate calls — draw overlay (before) and remove
-    // overlay (after). The remove must run even though the
-    // assertion threw in between.
+    // Three page.evaluate calls — wait-for-idle (before measure),
+    // draw overlay (before), and remove overlay (after). The remove
+    // must run even though the assertion threw in between.
     const evaluates = log.filter((c) => c.name === 'page.evaluate');
-    expect(evaluates).toHaveLength(2);
+    expect(evaluates).toHaveLength(3);
   });
 
   it('leaves non-locator targets untouched', async () => {
