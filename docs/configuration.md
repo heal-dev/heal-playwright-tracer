@@ -39,6 +39,50 @@ fixture fails fast on the first test of every worker with a
 diagnostic pointing back here. The reporter is idempotent — wiring
 it more than once is safe.
 
+### Videos from manually-created browser contexts
+
+The reporter's artefact copy (point 2 above) is driven entirely by
+`testInfo.attachments`. Playwright only auto-populates that list
+with a video for the contexts it creates itself — the built-in
+`context` / `page` fixtures. A context you create by hand with
+`browser.newContext()` (a custom auth/role fixture, a second
+context for a multi-tab flow, …) still records video to disk, but
+it is **never** added to `testInfo.attachments`, so the reporter
+never copies it and the viewer's video pane stays empty.
+
+To get those videos into `heal-tracer view` the fixture that owns
+the context must do two things: enable `recordVideo`, and attach
+the `Video` handles to `testInfo` itself. Capture the handles
+_before_ `context.close()` — after close `context.pages()` is
+empty — and resolve `video.path()` _after_ close, since the file
+is only finalized once the context is gone:
+
+```ts
+const context = await browser.newContext({
+  storageState,
+  recordVideo: { dir: testInfo.outputDir },
+});
+
+await use(context);
+
+// Playwright only auto-attaches video for its own context/page
+// fixtures, not for this manually-created one — do it ourselves.
+const videos = context.pages().map((p) => p.video());
+await context.close();
+for (const video of videos) {
+  if (!video) continue;
+  await testInfo.attach('video', {
+    path: await video.path(),
+    contentType: 'video/webm',
+  });
+}
+```
+
+Point `recordVideo.dir` at `testInfo.outputDir` so the file lands
+in the same per-test directory the reporter already harvests; the
+`testInfo.attach('video', …)` call is what actually makes the
+recording show up in the tracer.
+
 ## `configureTracer`
 
 `configureTracer` registers extra exporters (fanned out alongside
@@ -81,6 +125,50 @@ export default defineConfig({
 Full surface: [`src/application/heal-config/types.ts`](src/application/heal-config/types.ts).
 Exporters implement [`HealTraceExporter`](src/domain/trace-event-recorder/port/heal-trace-exporter.ts)
 (`write(record)` + `close()`).
+
+## Ignoring code (`// @heal-tracer-ignore`)
+
+A source-level opt-out, analogous to `// @ts-ignore`. Put the comment
+on its own line above the code the tracer should leave alone — no
+`__heal_enter`/`ok`/`throw`, no pre-processor, no trace records for it.
+
+Scope is decided by what the comment sits on:
+
+- Above a single leaf statement → only that statement is skipped;
+  siblings are still traced.
+
+  ```ts
+  // @heal-tracer-ignore
+  await flaky(); // not traced
+  await stable(); // traced
+  ```
+
+- Above a function, arrow, block, or compound statement → every leaf
+  inside it is skipped.
+
+  ```ts
+  context.route(
+    pred,
+    // @heal-tracer-ignore
+    async (route) => {
+      await route.continue({ headers: { ...route.request().headers() } });
+    },
+  );
+  ```
+
+The second form is the common one: a `context.route` handler (or any
+callback that fires concurrently and repeatedly) otherwise floods the
+trace with interleaved invocations and inflates call depth, because
+the recorder's enter-stack is shared across concurrent async chains.
+Annotating the handler removes both the noise and the depth skew.
+
+Matching is a word-boundary search of the comment text, so
+`/* @heal-tracer-ignore */`, `// @heal-tracer-ignore (vercel bypass)`, and JSDoc
+lines all work; `@heal-tracer-ignored` does not. Only leading comments count
+— a same-line trailing comment will not register.
+
+A whole file is better excluded via the plugin's `include` option
+than by annotating every statement.
 
 ## Pre-processors
 
