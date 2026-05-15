@@ -79,6 +79,7 @@ import {
 import { createCjsArtifactDetector } from '../../domain/code-hook-injector/service/statement-analysis/cjs-artifact-detector';
 import { createLeafStatementClassifier } from '../../domain/code-hook-injector/service/statement-analysis/leaf-statement-classifier';
 import { createNonWrappableStatementPredicate } from '../../domain/code-hook-injector/service/statement-analysis/non-wrappable-statement';
+import { isUnderHealIgnore } from '../../domain/code-hook-injector/service/statement-analysis/heal-ignore-directive';
 import { createForHeadDeclarationDetector } from '../../domain/code-hook-injector/service/statement-analysis/for-head-declaration-detector';
 import { createAsyncEnclosingFunctionDetector } from '../../domain/code-hook-injector/service/statement-analysis/async-enclosing-function-detector';
 import { createEnclosingScopeLabeler } from '../../domain/code-hook-injector/service/meta-fields/enclosing-scope-labeler';
@@ -156,6 +157,12 @@ function codeHookInjector(
 
         // File-level filter: only touch files the consumer opted in to.
         if (!matches(state.file.opts.filename || '')) return;
+
+        // Author opt-out: a `// @heal-tracer-ignore` directive on this
+        // statement or any enclosing function/block. Checked before
+        // any hook family so an ignored statement emits no
+        // enter/ok/throw and no preprocess.
+        if (isUnderHealIgnore(stmtPath)) return;
 
         // Skip statement kinds that no hook family should wrap.
         if (isNonWrappableStatement(stmtPath)) return;
