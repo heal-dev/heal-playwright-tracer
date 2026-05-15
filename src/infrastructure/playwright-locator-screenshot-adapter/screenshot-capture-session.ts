@@ -18,16 +18,22 @@
 //      scroll too, except for `toBeInViewport` / `not.toBeInViewport`
 //      where the wrapper opts out so it doesn't change the assertion
 //      outcome.
-//   2. Measure the target's `boundingBox`.
-//   3. Inject a `<div>` overlay at the target's document position
+//   2. Wait for the page to visually settle — `document.fonts.ready`
+//      plus two animation frames so at least one full layout+paint
+//      cycle has completed since the scroll. Deliberately NOT
+//      `networkidle`: SPAs that poll or hold a websocket never reach
+//      it, so it would burn the whole `screenshotTimeoutMs` on every
+//      capture. Best-effort like everything else here.
+//   3. Measure the target's `boundingBox`.
+//   4. Inject a `<div>` overlay at the target's document position
 //      (4px magenta border + faint translucent fill). See
 //      `overlay-helpers.ts` for the page-side draw/remove pair.
-//   4. Take a viewport screenshot — via CDP `Page.captureScreenshot`
+//   5. Take a viewport screenshot — via CDP `Page.captureScreenshot`
 //      when available (Chromium; avoids the headed-mode
 //      `Emulation.setDeviceMetricsOverride` resize that
 //      `page.screenshot` triggers), else `page.screenshot` fallback
 //      (Firefox/WebKit).
-//   5. Return a cleanup closure that removes the overlay after the
+//   6. Return a cleanup closure that removes the overlay after the
 //      caller's action/assertion completes.
 //
 // CDP `Overlay.highlightNode` is *not* used. It paints box-model
@@ -38,9 +44,10 @@
 // caring about the element's CSS.
 //
 // Every async this session awaits is capped at `screenshotTimeoutMs`
-// — `scrollIntoViewIfNeeded`, `boundingBox`, every CDP `send`,
-// `newCDPSession`, the `page.screenshot` fallback, and the
-// overlay's `page.evaluate` (draw / remove). Decoration must
+// — `scrollIntoViewIfNeeded`, the visual-settle `page.evaluate`,
+// `boundingBox`, every CDP `send`, `newCDPSession`, the
+// `page.screenshot` fallback, and the overlay's `page.evaluate`
+// (draw / remove). Decoration must
 // always fail-fast: the user's actionTimeout governs the action,
 // this timeout governs the tracer.
 
@@ -101,6 +108,8 @@ export class ScreenshotCaptureSession {
       }
     }
 
+    await this.waitForPageIdle(page);
+
     const box = await this.measureBox(target);
     if (!box) return null;
 
@@ -108,6 +117,39 @@ export class ScreenshotCaptureSession {
     const filename = `highlight-${seq}-${actionName}.png`;
     const fullPath = path.join(this.outputDir, filename);
     return this.drawAndScreenshot(page, seq, box, filename, fullPath);
+  }
+
+  // Best-effort "page is visually settled" gate, run after the
+  // optional scroll and before we measure/draw/screenshot. Waits for
+  // web fonts to finish loading and for two animation frames to pass,
+  // so at least one full layout+paint cycle has completed since the
+  // scroll (lazy content, reflow, transitions kicked off by the
+  // scroll have had a frame to land). `requestAnimationFrame` is
+  // double-nested because the first callback fires *before* the
+  // ensuing paint; the second guarantees that paint has happened.
+  // Swallowed + capped like every other async here so a wedged
+  // renderer can never block the user's action.
+  private async waitForPageIdle(page: Page): Promise<void> {
+    try {
+      await withTimeout(
+        page.evaluate(
+          () =>
+            new Promise<void>((resolve) => {
+              const settle = () =>
+                requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+              if (document.fonts) {
+                document.fonts.ready.then(settle, settle);
+              } else {
+                settle();
+              }
+            }),
+        ),
+        this.screenshotTimeoutMs,
+        'waitForPageIdle',
+      );
+    } catch (err) {
+      log.warn('waitForPageIdle did not settle before screenshot', err);
+    }
   }
 
   private async measureBox(target: CapturableTarget): Promise<Box | null> {
