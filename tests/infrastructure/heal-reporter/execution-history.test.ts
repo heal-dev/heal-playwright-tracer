@@ -313,14 +313,16 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-shot', 'execution.json'), 'utf8'),
     ) as ExecutionManifest;
     const attempt = manifest.tests[0].attempts[0];
-    expect(attempt.failureScreenshot).toBe('test-failed-1.png');
-    // The screenshot was copied into the per-attempt heal-traces dir.
+    expect(attempt.failureScreenshot).toBe('screenshots/test-failed-1.png');
+    // The screenshot was copied into the screenshots/ subdir of the
+    // per-attempt heal-traces dir (alongside the highlight PNGs).
     const copied = path.join(
       tmpDir,
       'heal-traces',
       'exec-shot',
       'tid-shot',
       '1',
+      'screenshots',
       'test-failed-1.png',
     );
     expect(fs.readFileSync(copied, 'utf8')).toBe('PNGDATA');

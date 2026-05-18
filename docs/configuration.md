@@ -115,7 +115,7 @@ screenshot's path on the failing attempt in `execution.json`:
           "error": {
             /* … */
           },
-          "failureScreenshot": "test-failed-1.png", // ← relative to the per-attempt dir
+          "failureScreenshot": "screenshots/test-failed-1.png", // ← relative to the per-attempt dir
         },
       ],
     },
@@ -125,10 +125,13 @@ screenshot's path on the failing attempt in `execution.json`:
 
 `failureScreenshot` is a path relative to the per-attempt
 `heal-traces/<executionId>/<testId>/<attempt>/` directory (forward
-slashes), set only when the attempt did not pass/skip **and**
-Playwright produced a screenshot. When several pages are open it is
-the first one (the primary page the test drove). Absent when the
-option is not enabled — that is not an error.
+slashes). The screenshot is copied into that directory's
+`screenshots/` subdir — the same place the per-statement highlight
+PNGs live, so every screenshot for a test is in one folder. It is
+set only when the attempt did not pass/skip **and** Playwright
+produced a screenshot. When several pages are open it is the first
+one (the primary page the test drove). Absent when the option is
+not enabled — that is not an error.
 
 Two caveats, both inherited from Playwright's implementation:
 

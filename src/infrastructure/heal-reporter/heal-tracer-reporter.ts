@@ -337,7 +337,8 @@ export class HealTracerReporter implements Reporter {
    *
    *   - 'trace'                     → <rootDir>/trace.zip
    *   - contentType: 'video/...'    → <rootDir>/videos/<basename>
-   *   - other (screenshot, user)    → <rootDir>/<rel-from-outputDir>
+   *   - 'screenshot' + image/...    → <rootDir>/screenshots/<basename>
+   *   - other (user attachments)    → <rootDir>/<rel-from-outputDir>
    *
    * Returns a `test-attachments` record whose `path` fields are the
    * destination-relative locations using forward slashes, so the
@@ -392,6 +393,13 @@ export class HealTracerReporter implements Reporter {
     }
     if (contentType.toLowerCase().startsWith('video/')) {
       return path.join('videos', path.basename(relFromSrc));
+    }
+    // Playwright's `screenshot: 'only-on-failure' | 'on'` (and any
+    // user `testInfo.attach('screenshot', …)` image) lands in the
+    // same `screenshots/` subdir as the per-statement highlight
+    // PNGs, so all screenshots for a test live in one place.
+    if (name === 'screenshot' && contentType.toLowerCase().startsWith('image/')) {
+      return path.join('screenshots', path.basename(relFromSrc));
     }
 
     return relFromSrc;

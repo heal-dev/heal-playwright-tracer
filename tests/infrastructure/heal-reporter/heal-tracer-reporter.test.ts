@@ -411,6 +411,34 @@ describe('HealTracerReporter — attachments', () => {
     expect(fs.readFileSync(path.join(rootDir, 'videos', 'video.webm'), 'utf8')).toBe('VIDEO');
   });
 
+  it("places Playwright's failure screenshot under the screenshots/ subdir", () => {
+    const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"failed","duration":10}\n',
+    });
+    const shotSrc = writeSrc(playwrightOutputDir, 'test-failed-1.png', 'PNG');
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'failed',
+        duration: 10,
+        attachments: [{ name: 'screenshot', path: shotSrc, contentType: 'image/png' }],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: { name: string; path: string; contentType: string }[];
+    };
+    expect(last.attachments).toEqual([
+      { name: 'screenshot', path: 'screenshots/test-failed-1.png', contentType: 'image/png' },
+    ]);
+    expect(fs.readFileSync(path.join(rootDir, 'screenshots', 'test-failed-1.png'), 'utf8')).toBe(
+      'PNG',
+    );
+  });
+
   it('preserves subdirs for non-trace, non-video attachments (e.g. user testInfo.attach)', () => {
     const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
       ndjsonContent:

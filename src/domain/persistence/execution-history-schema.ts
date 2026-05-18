@@ -125,7 +125,9 @@ export interface AttemptEntry {
    * Relative path (from the per-attempt heal-traces dir, forward
    * slashes — same convention as `TestAttachment.path`) to
    * Playwright's failure screenshot, after the reporter copied it
-   * into the heal-traces tree alongside the other attachments.
+   * into the `screenshots/` subdir of the heal-traces tree
+   * (alongside the per-statement highlight PNGs), e.g.
+   * `screenshots/test-failed-1.png`.
    *
    * Sourced from Playwright's own `screenshot: 'only-on-failure'`
    * (or `'on'`) attachment, so it is captured at test teardown —
