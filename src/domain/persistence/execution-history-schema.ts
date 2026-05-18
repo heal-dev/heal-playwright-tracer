@@ -97,8 +97,9 @@ export interface ExecutionTestEntry {
 }
 
 /**
- * Per-(test, attempt) execution slice. `failingStatement` and
- * `error` are only set when the attempt did not pass:
+ * Per-(test, attempt) execution slice. `failingStatement`,
+ * `error`, and `failureScreenshot` are only set when the attempt
+ * did not pass:
  *
  *   - Both present: the in-test failure was located to a specific
  *     `statement` whose `status === 'threw'`.
@@ -106,6 +107,11 @@ export interface ExecutionTestEntry {
  *     threw (rescued path — error is synthesized by the reporter).
  *   - Neither present: the attempt passed, was skipped, or no
  *     statement-level error was found on disk.
+ *
+ * `failureScreenshot` is independent of the two above — it is set
+ * whenever the attempt did not pass/skip AND Playwright produced a
+ * failure screenshot (the user configured `screenshot:
+ * 'only-on-failure'` or `'on'`). Absent otherwise.
  */
 export interface AttemptEntry {
   /** 1-indexed attempt number = Playwright's `result.retry + 1`. */
@@ -115,6 +121,23 @@ export interface AttemptEntry {
   durationMs: number;
   failingStatement?: FailingStatement;
   error?: StatementError;
+  /**
+   * Relative path (from the per-attempt heal-traces dir, forward
+   * slashes — same convention as `TestAttachment.path`) to
+   * Playwright's failure screenshot, after the reporter copied it
+   * into the `screenshots/` subdir of the heal-traces tree
+   * (alongside the per-statement highlight PNGs), e.g.
+   * `screenshots/test-failed-1.png`.
+   *
+   * Sourced from Playwright's own `screenshot: 'only-on-failure'`
+   * (or `'on'`) attachment, so it is captured at test teardown —
+   * NOT at the failing statement. Treat it as page state at unwind,
+   * not at the moment of failure. When several pages were open
+   * Playwright emits one screenshot per page; this is the first
+   * (the primary page the test drove). Absent when the user did not
+   * enable Playwright screenshots or the attempt passed/skipped.
+   */
+  failureScreenshot?: string;
 }
 
 /**
