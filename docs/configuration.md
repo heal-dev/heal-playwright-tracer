@@ -83,6 +83,70 @@ in the same per-test directory the reporter already harvests; the
 `testInfo.attach('video', …)` call is what actually makes the
 recording show up in the tracer.
 
+### Failure screenshots
+
+The tracer does **not** take its own end-of-test failure
+screenshot. Opt in through Playwright's native option instead:
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  use: { screenshot: 'only-on-failure' }, // or 'on'
+});
+```
+
+With that set, Playwright attaches a `screenshot` to each failed
+test. The reporter already copies every attachment into the
+`heal-traces/` tree (point 2 above); on top of that it records the
+screenshot's path on the failing attempt in `execution.json`:
+
+```jsonc
+// heal-traces/<executionId>/execution.json
+{
+  "tests": [
+    {
+      "attempts": [
+        {
+          "attempt": 1,
+          "status": "failed",
+          "failingStatement": {
+            /* … */
+          },
+          "error": {
+            /* … */
+          },
+          "failureScreenshot": "test-failed-1.png", // ← relative to the per-attempt dir
+        },
+      ],
+    },
+  ],
+}
+```
+
+`failureScreenshot` is a path relative to the per-attempt
+`heal-traces/<executionId>/<testId>/<attempt>/` directory (forward
+slashes), set only when the attempt did not pass/skip **and**
+Playwright produced a screenshot. When several pages are open it is
+the first one (the primary page the test drove). Absent when the
+option is not enabled — that is not an error.
+
+Two caveats, both inherited from Playwright's implementation:
+
+- It is captured at **test teardown**, not at the failing line. For
+  a timeout on `click()`/`fill()` the image shows post-unwind page
+  state (often after navigation/cleanup), not the stuck UI.
+- It is one screenshot per page, with no element highlight.
+
+For per-action context the tracer's always-on highlight
+screenshots are usually more useful — those are captured before
+every locator action/assertion with the target outlined, and are
+stamped onto each `statement` in the NDJSON (see the
+screenshot-pipeline section of
+[`architecture.md`](architecture.md)). `failureScreenshot` is the
+complementary "what did the whole page look like at the end"
+artefact for consumers that want it without scanning the
+`test-attachments` record.
+
 ## `configureTracer`
 
 `configureTracer` registers extra exporters (fanned out alongside

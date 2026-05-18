@@ -241,7 +241,7 @@ export class HealTracerReporter implements Reporter {
     // worker never started a trace file — record what Playwright
     // already knows and stop. No failing-statement source on disk.
     if (!traceCtx || !fs.existsSync(traceCtx.ndjsonPath)) {
-      this.captureAttempt(test, result, null, null);
+      this.captureAttempt(test, result, null, null, null);
       if (traceCtx) this.cleanupRegistry(test, result);
       return;
     }
@@ -260,7 +260,7 @@ export class HealTracerReporter implements Reporter {
         this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
       } catch (err) {
         log.error(`failed to append synthetic test-result to ${traceCtx.ndjsonPath}`, err);
-        this.captureAttempt(test, result, null, null);
+        this.captureAttempt(test, result, null, null, null);
         this.cleanupRegistry(test, result);
         return;
       }
@@ -280,7 +280,8 @@ export class HealTracerReporter implements Reporter {
       log.error(`failed to append test-attachments to ${traceCtx.ndjsonPath}`, err);
     }
 
-    this.captureAttempt(test, result, traceCtx.ndjsonPath, rescuedRecord);
+    const failureScreenshot = this.pickFailureScreenshot(attachmentsRecord.attachments);
+    this.captureAttempt(test, result, traceCtx.ndjsonPath, rescuedRecord, failureScreenshot);
     this.cleanupRegistry(test, result);
 
     if (rescuedRecord) {
@@ -457,12 +458,17 @@ export class HealTracerReporter implements Reporter {
    * statement and attaches it as `failingStatement` + `error`. A
    * `rescuedRecord` (synthesized by the rescue path) supplies
    * `error` when no statement-level threw is present.
+   * `failureScreenshot` (the heal-traces-relative path to
+   * Playwright's failure screenshot, already copied into the tree)
+   * is attached independently whenever the attempt did not
+   * pass/skip and Playwright produced one.
    */
   private captureAttempt(
     test: TestCase,
     result: TestResult,
     ndjsonPath: string | null,
     rescuedRecord: TestResultRecord | null,
+    failureScreenshot: string | null,
   ): void {
     const entry = this.upsertTestEntry(test);
     const attempt: AttemptEntry = {
@@ -480,9 +486,25 @@ export class HealTracerReporter implements Reporter {
       } else if (rescuedRecord?.error) {
         attempt.error = rescuedRecord.error;
       }
+      if (failureScreenshot) {
+        attempt.failureScreenshot = failureScreenshot;
+      }
     }
 
     entry.attempts.push(attempt);
+  }
+
+  // Playwright's `screenshot: 'only-on-failure' | 'on'` produces an
+  // attachment named exactly `screenshot` with an image contentType.
+  // The strict name match excludes user `testInfo.attach()` images.
+  // With several pages open Playwright emits one screenshot per
+  // page; the first is the primary page the test drove, which is
+  // the one worth surfacing on the attempt.
+  private pickFailureScreenshot(attachments: TestAttachment[]): string | null {
+    const shot = attachments.find(
+      (a) => a.name === 'screenshot' && a.contentType.toLowerCase().startsWith('image/'),
+    );
+    return shot?.path ?? null;
   }
 
   private upsertTestEntry(test: TestCase): ExecutionTestEntry {

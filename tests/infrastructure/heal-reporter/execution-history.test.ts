@@ -259,6 +259,130 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     });
   });
 
+  it("surfaces Playwright's only-on-failure screenshot as attempt.failureScreenshot (relative path)", () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-shot';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    stageNdjson({
+      executionId: 'exec-shot',
+      testId: 'tid-shot',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-shot' } },
+        {
+          kind: 'statement',
+          statement: {
+            seq: 1,
+            index: 0,
+            file: 'x.spec.ts',
+            line: 1,
+            endLine: 1,
+            kind: 'CallExpression',
+            scope: 'root',
+            source: 'page.locator("#go").click()',
+            hasAwait: true,
+            step: null,
+            stepPath: null,
+            status: 'threw',
+            duration: 1,
+            t: 0,
+            error: { message: 'boom' },
+            children: [],
+          },
+        },
+        { kind: 'test-result', status: 'failed', duration: 5 },
+      ],
+    });
+
+    // Playwright drops its failure screenshot into the test's outputDir
+    // (here = projectOutputDir, per stageNdjson's registry entry).
+    const shotSrc = path.join(projectOutputDir, 'test-failed-1.png');
+    fs.writeFileSync(shotSrc, 'PNGDATA');
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-shot' }),
+      fakeResult({
+        status: 'failed',
+        attachments: [{ name: 'screenshot', path: shotSrc, contentType: 'image/png' }],
+      } as Partial<TestResult>),
+    );
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-shot', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    const attempt = manifest.tests[0].attempts[0];
+    expect(attempt.failureScreenshot).toBe('test-failed-1.png');
+    // The screenshot was copied into the per-attempt heal-traces dir.
+    const copied = path.join(
+      tmpDir,
+      'heal-traces',
+      'exec-shot',
+      'tid-shot',
+      '1',
+      'test-failed-1.png',
+    );
+    expect(fs.readFileSync(copied, 'utf8')).toBe('PNGDATA');
+  });
+
+  it('omits failureScreenshot when the failing attempt has no screenshot attachment', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-noshot';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    stageNdjson({
+      executionId: 'exec-noshot',
+      testId: 'tid-noshot',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-noshot' } },
+        { kind: 'test-result', status: 'failed', duration: 5 },
+      ],
+    });
+
+    reporter.onTestEnd?.(fakeTestCase({ id: 'tid-noshot' }), fakeResult({ status: 'failed' }));
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-noshot', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    expect(manifest.tests[0].attempts[0].failureScreenshot).toBeUndefined();
+  });
+
+  it('does not set failureScreenshot on a passing attempt even if a screenshot attachment exists', () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-passshot';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    stageNdjson({
+      executionId: 'exec-passshot',
+      testId: 'tid-passshot',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-passshot' } },
+        { kind: 'test-result', status: 'passed', duration: 5 },
+      ],
+    });
+
+    const shotSrc = path.join(projectOutputDir, 'on-shot.png');
+    fs.writeFileSync(shotSrc, 'PNGDATA');
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-passshot' }),
+      fakeResult({
+        status: 'passed',
+        attachments: [{ name: 'screenshot', path: shotSrc, contentType: 'image/png' }],
+      } as Partial<TestResult>),
+    );
+    reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-passshot', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+    expect(manifest.tests[0].attempts[0].failureScreenshot).toBeUndefined();
+  });
+
   it('on a failed test with no registry entry, captures the attempt without failingStatement/error', () => {
     process.env.HEAL_EXECUTION_ID = 'exec-noreg';
     const reporter = new HealTracerReporter();
