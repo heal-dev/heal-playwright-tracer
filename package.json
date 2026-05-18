@@ -87,7 +87,7 @@
   "devDependencies": {
     "@babel/core": "^7.29.0",
     "@babel/parser": "^7.29.2",
-    "@playwright/test": "1.59.1",
+    "@playwright/test": "1.60.0",
     "@types/babel__core": "^7.20.5",
     "@types/babel__traverse": "^7.28.0",
     "@types/node": "^22.0.0",
