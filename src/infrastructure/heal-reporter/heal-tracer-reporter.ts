@@ -80,6 +80,26 @@ import { log } from '../../util/logger';
 export const HEAL_PENDING_SUBDIR = '.heal-pending';
 
 /**
+ * One entry of the `videoPages` array the fixture writes into the
+ * registry at teardown — maps a Playwright-recorded video file back
+ * to the page it captured so the reporter can stamp `pageName` /
+ * `pageUrl` onto the matching video attachment.
+ */
+export interface VideoPageInfo {
+  /**
+   * Video file path RELATIVE to Playwright's outputDir, forward
+   * slashes — matched against the same outputDir-relative path the
+   * reporter computes for each attachment, so the join is exact even
+   * when several pages produce a same-named `video.webm`.
+   */
+  video: string;
+  /** Synthetic role label: `'main'`, `'page-1'`, `'page-2'`, … */
+  name: string;
+  /** Page URL captured at fixture teardown. */
+  url: string;
+}
+
+/**
  * Shape of the per-test registry entry. Minimal: everything else
  * the reporter needs is reachable from `TestCase` / `TestResult`.
  */
@@ -101,6 +121,12 @@ export interface HealTraceContext {
   playwrightOutputDir: string;
   /** Per-process executionId at the time the fixture wrote the entry. */
   executionId: string;
+  /**
+   * Video → page map the fixture appends at teardown (overwriting the
+   * setup-time entry). Absent when the test recorded no video or
+   * crashed before teardown could capture it.
+   */
+  videoPages?: VideoPageInfo[];
 }
 
 /**
@@ -241,7 +267,7 @@ export class HealTracerReporter implements Reporter {
     // worker never started a trace file — record what Playwright
     // already knows and stop. No failing-statement source on disk.
     if (!traceCtx || !fs.existsSync(traceCtx.ndjsonPath)) {
-      this.captureAttempt(test, result, null, null);
+      this.captureAttempt(test, result, null, null, null);
       if (traceCtx) this.cleanupRegistry(test, result);
       return;
     }
@@ -260,7 +286,7 @@ export class HealTracerReporter implements Reporter {
         this.appendFile(traceCtx.ndjsonPath, JSON.stringify(rescuedRecord) + '\n');
       } catch (err) {
         log.error(`failed to append synthetic test-result to ${traceCtx.ndjsonPath}`, err);
-        this.captureAttempt(test, result, null, null);
+        this.captureAttempt(test, result, null, null, null);
         this.cleanupRegistry(test, result);
         return;
       }
@@ -280,7 +306,8 @@ export class HealTracerReporter implements Reporter {
       log.error(`failed to append test-attachments to ${traceCtx.ndjsonPath}`, err);
     }
 
-    this.captureAttempt(test, result, traceCtx.ndjsonPath, rescuedRecord);
+    const failureScreenshot = this.pickFailureScreenshot(attachmentsRecord.attachments);
+    this.captureAttempt(test, result, traceCtx.ndjsonPath, rescuedRecord, failureScreenshot);
     this.cleanupRegistry(test, result);
 
     if (rescuedRecord) {
@@ -321,6 +348,7 @@ export class HealTracerReporter implements Reporter {
           rootDir: parsed.rootDir,
           playwrightOutputDir: parsed.playwrightOutputDir,
           executionId: parsed.executionId,
+          videoPages: sanitizeVideoPages(parsed.videoPages),
         };
       } catch {
         continue;
@@ -336,7 +364,8 @@ export class HealTracerReporter implements Reporter {
    *
    *   - 'trace'                     → <rootDir>/trace.zip
    *   - contentType: 'video/...'    → <rootDir>/videos/<basename>
-   *   - other (screenshot, user)    → <rootDir>/<rel-from-outputDir>
+   *   - 'screenshot' + image/...    → <rootDir>/screenshots/<basename>
+   *   - other (user attachments)    → <rootDir>/<rel-from-outputDir>
    *
    * Returns a `test-attachments` record whose `path` fields are the
    * destination-relative locations using forward slashes, so the
@@ -352,6 +381,12 @@ export class HealTracerReporter implements Reporter {
     const srcRoot = path.resolve(traceCtx.playwrightOutputDir);
     const dstRoot = path.resolve(traceCtx.rootDir);
     const attachments: TestAttachment[] = [];
+
+    // Key the video→page map by the outputDir-relative path so the
+    // join is exact even when several pages produce a `video.webm`.
+    const videoByRel = new Map<string, VideoPageInfo>(
+      (traceCtx.videoPages ?? []).map((vp) => [vp.video, vp]),
+    );
 
     for (const att of result.attachments ?? []) {
       if (!att.path) continue;
@@ -375,11 +410,22 @@ export class HealTracerReporter implements Reporter {
       // Forward slashes on all platforms — the local viewer maps
       // these into URLs and Windows paths break URL routing.
       const rel = dstRel.split(path.sep).join('/');
-      attachments.push({
+      const entry: TestAttachment = {
         name: att.name,
         path: rel,
         contentType: att.contentType,
-      });
+      };
+
+      if (att.contentType.toLowerCase().startsWith('video/')) {
+        const relFromSrcPosix = relFromSrc.split(path.sep).join('/');
+        const vp = videoByRel.get(relFromSrcPosix);
+        if (vp) {
+          entry.pageName = vp.name;
+          entry.pageUrl = vp.url;
+        }
+      }
+
+      attachments.push(entry);
     }
 
     return { kind: 'test-attachments', attachments };
@@ -391,6 +437,13 @@ export class HealTracerReporter implements Reporter {
     }
     if (contentType.toLowerCase().startsWith('video/')) {
       return path.join('videos', path.basename(relFromSrc));
+    }
+    // Playwright's `screenshot: 'only-on-failure' | 'on'` (and any
+    // user `testInfo.attach('screenshot', …)` image) lands in the
+    // same `screenshots/` subdir as the per-statement highlight
+    // PNGs, so all screenshots for a test live in one place.
+    if (name === 'screenshot' && contentType.toLowerCase().startsWith('image/')) {
+      return path.join('screenshots', path.basename(relFromSrc));
     }
 
     return relFromSrc;
@@ -457,12 +510,17 @@ export class HealTracerReporter implements Reporter {
    * statement and attaches it as `failingStatement` + `error`. A
    * `rescuedRecord` (synthesized by the rescue path) supplies
    * `error` when no statement-level threw is present.
+   * `failureScreenshot` (the heal-traces-relative path to
+   * Playwright's failure screenshot, already copied into the tree)
+   * is attached independently whenever the attempt did not
+   * pass/skip and Playwright produced one.
    */
   private captureAttempt(
     test: TestCase,
     result: TestResult,
     ndjsonPath: string | null,
     rescuedRecord: TestResultRecord | null,
+    failureScreenshot: string | null,
   ): void {
     const entry = this.upsertTestEntry(test);
     const attempt: AttemptEntry = {
@@ -480,9 +538,25 @@ export class HealTracerReporter implements Reporter {
       } else if (rescuedRecord?.error) {
         attempt.error = rescuedRecord.error;
       }
+      if (failureScreenshot) {
+        attempt.failureScreenshot = failureScreenshot;
+      }
     }
 
     entry.attempts.push(attempt);
+  }
+
+  // Playwright's `screenshot: 'only-on-failure' | 'on'` produces an
+  // attachment named exactly `screenshot` with an image contentType.
+  // The strict name match excludes user `testInfo.attach()` images.
+  // With several pages open Playwright emits one screenshot per
+  // page; the first is the primary page the test drove, which is
+  // the one worth surfacing on the attempt.
+  private pickFailureScreenshot(attachments: TestAttachment[]): string | null {
+    const shot = attachments.find(
+      (a) => a.name === 'screenshot' && a.contentType.toLowerCase().startsWith('image/'),
+    );
+    return shot?.path ?? null;
   }
 
   private upsertTestEntry(test: TestCase): ExecutionTestEntry {
@@ -596,6 +670,23 @@ function computeTotals(entries: ExecutionTestEntry[]): ExecutionTotals {
     }
   }
   return totals;
+}
+
+// Lenient parse of the registry's optional `videoPages`. Never
+// throws and never rejects the surrounding entry — a malformed map
+// just means video attachments go un-enriched, not that the trace
+// context is unusable. Entries missing any field are dropped.
+function sanitizeVideoPages(raw: unknown): VideoPageInfo[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: VideoPageInfo[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const { video, name, url } = item as Record<string, unknown>;
+    if (typeof video !== 'string' || video.length === 0) continue;
+    if (typeof name !== 'string' || typeof url !== 'string') continue;
+    out.push({ video, name, url });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function readPlaywrightVersion(): string | undefined {
