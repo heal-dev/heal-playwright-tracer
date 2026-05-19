@@ -74,7 +74,7 @@ export class IntegrationSandbox {
           version: '0.0.0',
           private: true,
           devDependencies: {
-            '@playwright/test': process.env.PLAYWRIGHT_VERSION ?? '1.58.1',
+            '@playwright/test': process.env.PLAYWRIGHT_VERSION ?? '1.60.0',
             '@heal-dev/heal-playwright-tracer': `file:${this.opts.tarballPath}`,
           },
         },
