@@ -261,11 +261,12 @@ export interface TestAttachment {
   contentType: string;
   /**
    * Video attachments only: a synthetic role label for the page this
-   * video recorded — `'main'` for the test's primary page, `'popup-1'`,
-   * `'popup-2'`, … for popups in open order. Lets consumers tell apart
-   * the multiple `video/*` files a multi-page test produces. Absent for
-   * non-video attachments, and for videos the fixture could not map back
-   * to a page (best-effort; e.g. the page was closed before teardown).
+   * video recorded — `'main'` for the test's primary page, `'page-1'`,
+   * `'page-2'`, … for any other page in open order. Lets consumers tell
+   * apart the multiple `video/*` files a multi-page test produces.
+   * Absent for non-video attachments, and for videos the fixture could
+   * not map back to a page (best-effort; e.g. the page was closed
+   * before teardown).
    */
   pageName?: string;
   /**

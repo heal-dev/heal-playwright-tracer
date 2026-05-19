@@ -93,7 +93,7 @@ export interface VideoPageInfo {
    * when several pages produce a same-named `video.webm`.
    */
   video: string;
-  /** Synthetic role label: `'main'`, `'popup-1'`, `'popup-2'`, … */
+  /** Synthetic role label: `'main'`, `'page-1'`, `'page-2'`, … */
   name: string;
   /** Page URL captured at fixture teardown. */
   url: string;

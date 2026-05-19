@@ -365,11 +365,11 @@ export const test = base.extend<TraceFixtures>({
         // (`page.video()` is null), so it costs nothing then.
         try {
           const videoPages: VideoPageInfo[] = [];
-          let popupIndex = 0;
+          let pageIndex = 0;
           for (const p of page.context().pages()) {
             const video = p.video();
             if (!video) continue;
-            const name = p === page ? 'main' : `popup-${(popupIndex += 1)}`;
+            const name = p === page ? 'main' : `page-${(pageIndex += 1)}`;
             let videoFile: string;
             try {
               videoFile = await video.path();

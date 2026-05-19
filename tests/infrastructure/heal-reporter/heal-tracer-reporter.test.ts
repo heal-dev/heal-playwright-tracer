@@ -512,10 +512,10 @@ describe('HealTracerReporter — attachments', () => {
     // Two pages both produce a file literally named `video.webm`;
     // only the outputDir-relative path tells them apart.
     const mainSrc = writeSrc(playwrightOutputDir, path.join('pages', 'main', 'video.webm'), 'MAIN');
-    const popupSrc = writeSrc(
+    const secondSrc = writeSrc(
       playwrightOutputDir,
-      path.join('pages', 'popup', 'video.webm'),
-      'POPUP',
+      path.join('pages', 'second', 'video.webm'),
+      'SECOND',
     );
 
     const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
@@ -526,7 +526,7 @@ describe('HealTracerReporter — attachments', () => {
         ...base,
         videoPages: [
           { video: 'pages/main/video.webm', name: 'main', url: 'https://app.test/home' },
-          { video: 'pages/popup/video.webm', name: 'popup-1', url: 'https://app.test/oauth' },
+          { video: 'pages/second/video.webm', name: 'page-1', url: 'https://app.test/oauth' },
         ],
       }),
     );
@@ -539,7 +539,7 @@ describe('HealTracerReporter — attachments', () => {
         duration: 10,
         attachments: [
           { name: 'video', path: mainSrc, contentType: 'video/webm' },
-          { name: 'video', path: popupSrc, contentType: 'video/webm' },
+          { name: 'video', path: secondSrc, contentType: 'video/webm' },
         ],
       } as unknown as Partial<TestResult>),
     );
@@ -561,7 +561,7 @@ describe('HealTracerReporter — attachments', () => {
         name: 'video',
         path: 'videos/video.webm',
         contentType: 'video/webm',
-        pageName: 'popup-1',
+        pageName: 'page-1',
         pageUrl: 'https://app.test/oauth',
       },
     ]);
