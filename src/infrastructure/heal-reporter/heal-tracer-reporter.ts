@@ -80,6 +80,26 @@ import { log } from '../../util/logger';
 export const HEAL_PENDING_SUBDIR = '.heal-pending';
 
 /**
+ * One entry of the `videoPages` array the fixture writes into the
+ * registry at teardown — maps a Playwright-recorded video file back
+ * to the page it captured so the reporter can stamp `pageName` /
+ * `pageUrl` onto the matching video attachment.
+ */
+export interface VideoPageInfo {
+  /**
+   * Video file path RELATIVE to Playwright's outputDir, forward
+   * slashes — matched against the same outputDir-relative path the
+   * reporter computes for each attachment, so the join is exact even
+   * when several pages produce a same-named `video.webm`.
+   */
+  video: string;
+  /** Synthetic role label: `'main'`, `'popup-1'`, `'popup-2'`, … */
+  name: string;
+  /** Page URL captured at fixture teardown. */
+  url: string;
+}
+
+/**
  * Shape of the per-test registry entry. Minimal: everything else
  * the reporter needs is reachable from `TestCase` / `TestResult`.
  */
@@ -101,6 +121,12 @@ export interface HealTraceContext {
   playwrightOutputDir: string;
   /** Per-process executionId at the time the fixture wrote the entry. */
   executionId: string;
+  /**
+   * Video → page map the fixture appends at teardown (overwriting the
+   * setup-time entry). Absent when the test recorded no video or
+   * crashed before teardown could capture it.
+   */
+  videoPages?: VideoPageInfo[];
 }
 
 /**
@@ -322,6 +348,7 @@ export class HealTracerReporter implements Reporter {
           rootDir: parsed.rootDir,
           playwrightOutputDir: parsed.playwrightOutputDir,
           executionId: parsed.executionId,
+          videoPages: sanitizeVideoPages(parsed.videoPages),
         };
       } catch {
         continue;
@@ -355,6 +382,12 @@ export class HealTracerReporter implements Reporter {
     const dstRoot = path.resolve(traceCtx.rootDir);
     const attachments: TestAttachment[] = [];
 
+    // Key the video→page map by the outputDir-relative path so the
+    // join is exact even when several pages produce a `video.webm`.
+    const videoByRel = new Map<string, VideoPageInfo>(
+      (traceCtx.videoPages ?? []).map((vp) => [vp.video, vp]),
+    );
+
     for (const att of result.attachments ?? []) {
       if (!att.path) continue;
       const srcResolved = path.resolve(att.path);
@@ -377,11 +410,22 @@ export class HealTracerReporter implements Reporter {
       // Forward slashes on all platforms — the local viewer maps
       // these into URLs and Windows paths break URL routing.
       const rel = dstRel.split(path.sep).join('/');
-      attachments.push({
+      const entry: TestAttachment = {
         name: att.name,
         path: rel,
         contentType: att.contentType,
-      });
+      };
+
+      if (att.contentType.toLowerCase().startsWith('video/')) {
+        const relFromSrcPosix = relFromSrc.split(path.sep).join('/');
+        const vp = videoByRel.get(relFromSrcPosix);
+        if (vp) {
+          entry.pageName = vp.name;
+          entry.pageUrl = vp.url;
+        }
+      }
+
+      attachments.push(entry);
     }
 
     return { kind: 'test-attachments', attachments };
@@ -626,6 +670,23 @@ function computeTotals(entries: ExecutionTestEntry[]): ExecutionTotals {
     }
   }
   return totals;
+}
+
+// Lenient parse of the registry's optional `videoPages`. Never
+// throws and never rejects the surrounding entry — a malformed map
+// just means video attachments go un-enriched, not that the trace
+// context is unusable. Entries missing any field are dropped.
+function sanitizeVideoPages(raw: unknown): VideoPageInfo[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const out: VideoPageInfo[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const { video, name, url } = item as Record<string, unknown>;
+    if (typeof video !== 'string' || video.length === 0) continue;
+    if (typeof name !== 'string' || typeof url !== 'string') continue;
+    out.push({ video, name, url });
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function readPlaywrightVersion(): string | undefined {
