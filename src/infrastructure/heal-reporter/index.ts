@@ -14,6 +14,7 @@ export {
 export type {
   HealTracerReporterDeps,
   HealTraceContext,
+  VideoPageInfo,
   RescueContext,
   RescueHook,
 } from './heal-tracer-reporter';

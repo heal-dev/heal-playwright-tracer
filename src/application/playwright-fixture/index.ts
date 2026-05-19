@@ -73,7 +73,11 @@ import { ConsoleCaptureSession } from '../../infrastructure/playwright-console-c
 import { NetworkCaptureSession } from '../../infrastructure/playwright-network-capture-adapter';
 import { HealTracesLayout, resolveExecutionId } from '../../infrastructure/heal-traces-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
-import { healPendingRegistryPath } from '../../infrastructure/heal-reporter';
+import {
+  healPendingRegistryPath,
+  type HealTraceContext,
+  type VideoPageInfo,
+} from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type {
@@ -182,17 +186,14 @@ export const test = base.extend<TraceFixtures>({
         captured.testId,
         captured.attempt,
       );
+      const registryEntry: HealTraceContext = {
+        ndjsonPath,
+        rootDir: testDir,
+        executionId: captured.executionId,
+        playwrightOutputDir: testInfo.outputDir,
+      };
       fs.mkdirSync(path.dirname(registryPath), { recursive: true });
-      fs.writeFileSync(
-        registryPath,
-        JSON.stringify({
-          ndjsonPath,
-          rootDir: testDir,
-          executionId: captured.executionId,
-          playwrightOutputDir: testInfo.outputDir,
-        }),
-        'utf8',
-      );
+      fs.writeFileSync(registryPath, JSON.stringify(registryEntry), 'utf8');
 
       const tracerCtx: HealTracerTestContext = {
         testInfo,
@@ -353,6 +354,45 @@ export const test = base.extend<TraceFixtures>({
       try {
         await use();
       } finally {
+        // Map each Playwright-recorded video back to the page that
+        // produced it, captured here (before any teardown hook
+        // navigates or closes a page) so `pageUrl` reflects where
+        // the test body left the page. Best-effort: any failure just
+        // leaves the video attachments un-enriched. Re-writes the
+        // registry entry the reporter reads in `onTestEnd` — that
+        // hook runs after this fixture returns, so it sees the
+        // augmented entry. Skipped entirely when `recordVideo` is off
+        // (`page.video()` is null), so it costs nothing then.
+        try {
+          const videoPages: VideoPageInfo[] = [];
+          let pageIndex = 0;
+          for (const p of page.context().pages()) {
+            const video = p.video();
+            if (!video) continue;
+            const name = p === page ? 'main' : `page-${(pageIndex += 1)}`;
+            let videoFile: string;
+            try {
+              videoFile = await video.path();
+            } catch {
+              continue;
+            }
+            videoPages.push({
+              video: path.relative(testInfo.outputDir, videoFile).split(path.sep).join('/'),
+              name,
+              url: p.url(),
+            });
+          }
+          if (videoPages.length > 0) {
+            fs.writeFileSync(
+              registryPath,
+              JSON.stringify({ ...registryEntry, videoPages }),
+              'utf8',
+            );
+          }
+        } catch (err) {
+          log.error('video-page capture failed', err);
+        }
+
         // Run any teardown hooks registered during the test. Runs
         // BEFORE lifecycle teardowns so hooks that log via an SDK
         // still see the per-test globals a lifecycle installed, and

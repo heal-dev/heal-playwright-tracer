@@ -411,6 +411,216 @@ describe('HealTracerReporter — attachments', () => {
     expect(fs.readFileSync(path.join(rootDir, 'videos', 'video.webm'), 'utf8')).toBe('VIDEO');
   });
 
+  it('stamps pageName/pageUrl onto video attachments via the registry videoPages map', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const traceSrc = writeSrc(playwrightOutputDir, 'trace.zip', 'TRACE');
+    const videoSrc = writeSrc(
+      playwrightOutputDir,
+      path.join('pages', 'page-1', 'video.webm'),
+      'VIDEO',
+    );
+
+    // Simulate the fixture's teardown re-write of the registry entry.
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          { video: 'pages/page-1/video.webm', name: 'main', url: 'https://example.com/checkout' },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          { name: 'trace', path: traceSrc, contentType: 'application/zip' },
+          { name: 'video', path: videoSrc, contentType: 'video/webm' },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const lines = readLines(ndjsonPath);
+    const last = JSON.parse(lines.at(-1)!) as {
+      attachments: Array<{
+        name: string;
+        path: string;
+        contentType: string;
+        pageName?: string;
+        pageUrl?: string;
+      }>;
+    };
+    // Video is enriched; the trace attachment is left untouched.
+    expect(last.attachments).toEqual([
+      { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
+      {
+        name: 'video',
+        path: 'videos/video.webm',
+        contentType: 'video/webm',
+        pageName: 'main',
+        pageUrl: 'https://example.com/checkout',
+      },
+    ]);
+  });
+
+  it('leaves video attachments un-enriched when videoPages is malformed', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const videoSrc = writeSrc(playwrightOutputDir, 'video.webm', 'VIDEO');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(registryPath, JSON.stringify({ ...base, videoPages: 'not-an-array' }));
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [{ name: 'video', path: videoSrc, contentType: 'video/webm' }],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{ name: string; path: string; contentType: string }>;
+    };
+    expect(last.attachments).toEqual([
+      { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
+    ]);
+  });
+
+  it('disambiguates multiple same-named videos by their outputDir-relative path', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    // Two pages both produce a file literally named `video.webm`;
+    // only the outputDir-relative path tells them apart.
+    const mainSrc = writeSrc(playwrightOutputDir, path.join('pages', 'main', 'video.webm'), 'MAIN');
+    const secondSrc = writeSrc(
+      playwrightOutputDir,
+      path.join('pages', 'second', 'video.webm'),
+      'SECOND',
+    );
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          { video: 'pages/main/video.webm', name: 'main', url: 'https://app.test/home' },
+          { video: 'pages/second/video.webm', name: 'page-1', url: 'https://app.test/oauth' },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          { name: 'video', path: mainSrc, contentType: 'video/webm' },
+          { name: 'video', path: secondSrc, contentType: 'video/webm' },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{ name: string; pageName?: string; pageUrl?: string }>;
+    };
+    // Both copied to the same `videos/video.webm` slot, but each
+    // attachment carries the page identity its source path resolved to.
+    expect(last.attachments).toEqual([
+      {
+        name: 'video',
+        path: 'videos/video.webm',
+        contentType: 'video/webm',
+        pageName: 'main',
+        pageUrl: 'https://app.test/home',
+      },
+      {
+        name: 'video',
+        path: 'videos/video.webm',
+        contentType: 'video/webm',
+        pageName: 'page-1',
+        pageUrl: 'https://app.test/oauth',
+      },
+    ]);
+  });
+
+  it('drops individual malformed videoPages entries while keeping valid ones', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const okSrc = writeSrc(playwrightOutputDir, path.join('ok', 'video.webm'), 'OK');
+    const badSrc = writeSrc(playwrightOutputDir, path.join('bad', 'video.webm'), 'BAD');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          null,
+          'string-item',
+          { video: 'bad/video.webm', name: 'main' }, // missing `url`
+          { video: 'ok/video.webm', name: 'main', url: 'https://app.test/ok' },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          { name: 'video', path: okSrc, contentType: 'video/webm' },
+          { name: 'video', path: badSrc, contentType: 'video/webm' },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{ name: string; pageName?: string; pageUrl?: string }>;
+    };
+    // Only the well-formed entry enriched its video; the one whose
+    // entry was missing `url` is left untouched (no crash, no partial).
+    expect(last.attachments).toEqual([
+      {
+        name: 'video',
+        path: 'videos/video.webm',
+        contentType: 'video/webm',
+        pageName: 'main',
+        pageUrl: 'https://app.test/ok',
+      },
+      { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
+    ]);
+  });
+
   it("places Playwright's failure screenshot under the screenshots/ subdir", () => {
     const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
       ndjsonContent:
