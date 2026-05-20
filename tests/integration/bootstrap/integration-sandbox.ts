@@ -54,6 +54,14 @@ export interface SandboxOptions {
    * to `<ctx.healDataDir>/preprocess-record.ndjson` on each hit.
    */
   withPreProcessor?: boolean;
+  /**
+   * When true, set Playwright's `use.video` to `'on'` instead of the
+   * default `'off'`, so the fixture's video-page capture path runs
+   * for real and the reporter's positional join with
+   * `result.attachments` video entries is exercised end-to-end. Used
+   * by the video-page-metadata integration test.
+   */
+  withVideo?: boolean;
 }
 
 export class IntegrationSandbox {
@@ -210,7 +218,7 @@ export default defineConfig({
   use: {
     headless: true,
     screenshot: 'off',
-    video: 'off',
+    video: ${this.opts.withVideo ? `'on'` : `'off'`},
     trace: 'off',
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],

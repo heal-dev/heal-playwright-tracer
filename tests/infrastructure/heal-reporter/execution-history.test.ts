@@ -136,7 +136,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
       fakeResult({ status: 'failed', duration: 200 }),
     );
 
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifestPath = path.join(tmpDir, 'heal-traces', 'exec-fixed', 'execution.json');
     expect(fs.existsSync(manifestPath)).toBe(true);
@@ -173,7 +173,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     reporter.onTestEnd?.(test, fakeResult({ status: 'failed', retry: 0 }));
     reporter.onTestEnd?.(test, fakeResult({ status: 'passed', retry: 1 }));
 
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifestPath = path.join(tmpDir, 'heal-traces', 'exec-retry', 'execution.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExecutionManifest;
@@ -242,7 +242,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
       fakeTestCase({ id: 'tid-fail', title: 'fails on click' }),
       fakeResult({ status: 'failed', retry: 0 }),
     );
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifestPath = path.join(tmpDir, 'heal-traces', 'exec-failing', 'execution.json');
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) as ExecutionManifest;
@@ -259,7 +259,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     });
   });
 
-  it("surfaces Playwright's only-on-failure screenshot as attempt.failureScreenshot (relative path)", () => {
+  it("surfaces Playwright's only-on-failure screenshot as attempt.failureScreenshot (relative path)", async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-shot';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -307,7 +307,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
         attachments: [{ name: 'screenshot', path: shotSrc, contentType: 'image/png' }],
       } as Partial<TestResult>),
     );
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-shot', 'execution.json'), 'utf8'),
@@ -328,7 +328,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(fs.readFileSync(copied, 'utf8')).toBe('PNGDATA');
   });
 
-  it('omits failureScreenshot when the failing attempt has no screenshot attachment', () => {
+  it('omits failureScreenshot when the failing attempt has no screenshot attachment', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-noshot';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -344,7 +344,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     });
 
     reporter.onTestEnd?.(fakeTestCase({ id: 'tid-noshot' }), fakeResult({ status: 'failed' }));
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-noshot', 'execution.json'), 'utf8'),
@@ -352,7 +352,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(manifest.tests[0].attempts[0].failureScreenshot).toBeUndefined();
   });
 
-  it('does not set failureScreenshot on a passing attempt even if a screenshot attachment exists', () => {
+  it('does not set failureScreenshot on a passing attempt even if a screenshot attachment exists', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-passshot';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -377,7 +377,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
         attachments: [{ name: 'screenshot', path: shotSrc, contentType: 'image/png' }],
       } as Partial<TestResult>),
     );
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-passshot', 'execution.json'), 'utf8'),
@@ -385,13 +385,13 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(manifest.tests[0].attempts[0].failureScreenshot).toBeUndefined();
   });
 
-  it('on a failed test with no registry entry, captures the attempt without failingStatement/error', () => {
+  it('on a failed test with no registry entry, captures the attempt without failingStatement/error', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-noreg';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
 
     reporter.onTestEnd?.(fakeTestCase({ id: 'tid-x' }), fakeResult({ status: 'failed' }));
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-noreg', 'execution.json'), 'utf8'),
@@ -402,7 +402,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(attempt.error).toBeUndefined();
   });
 
-  it('does not invoke the finder on skipped attempts', () => {
+  it('does not invoke the finder on skipped attempts', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-skip';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -442,7 +442,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     });
 
     reporter.onTestEnd?.(fakeTestCase({ id: 'tid-skip' }), fakeResult({ status: 'skipped' }));
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-skip', 'execution.json'), 'utf8'),
@@ -453,7 +453,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(attempt.error).toBeUndefined();
   });
 
-  it('on a crash rescue with no threw statement, falls back to the rescued record error', () => {
+  it('on a crash rescue with no threw statement, falls back to the rescued record error', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-crash';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -476,7 +476,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
         errors: [{ message: 'Worker process exited with code 137' }],
       } as Partial<TestResult>),
     );
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-crash', 'execution.json'), 'utf8'),
@@ -487,7 +487,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(attempt.error?.message).toMatch(/worker/i);
   });
 
-  it('on a crash rescue with a pre-crash threw statement, prefers the statement-level error over the rescued one', () => {
+  it('on a crash rescue with a pre-crash threw statement, prefers the statement-level error over the rescued one', async () => {
     process.env.HEAL_EXECUTION_ID = 'exec-crash-pre';
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
@@ -533,7 +533,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
         errors: [{ message: 'Worker process exited with code 137' }],
       } as Partial<TestResult>),
     );
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-crash-pre', 'execution.json'), 'utf8'),
@@ -548,7 +548,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
     reporter.onTestEnd?.(fakeTestCase(), fakeResult());
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const ndjsonPath = path.join(tmpDir, 'heal-traces', 'executions.ndjson');
     expect(fs.existsSync(ndjsonPath)).toBe(true);
@@ -573,7 +573,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     let reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
     reporter.onTestEnd?.(fakeTestCase(), fakeResult());
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     // Run 2 — fresh reporter, fresh memoized id
     resetExecutionIdForTesting();
@@ -581,7 +581,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
     reporter.onTestEnd?.(fakeTestCase(), fakeResult({ status: 'failed' }));
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const lines = fs
       .readFileSync(path.join(tmpDir, 'heal-traces', 'executions.ndjson'), 'utf8')
@@ -596,7 +596,7 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     delete process.env.HEAL_EXECUTION_ID;
     const reporter = new HealTracerReporter();
     reporter.onBegin?.(fakeConfig(), {} as never);
-    reporter.onEnd?.();
+    await reporter.onEnd?.();
 
     const ndjsonPath = path.join(tmpDir, 'heal-traces', 'executions.ndjson');
     const line = fs

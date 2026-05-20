@@ -14,8 +14,12 @@ import {
   HEAL_PENDING_SUBDIR,
   healPendingRegistryPath,
   type RescueContext,
+  type AttachmentsContext,
 } from '../../../src/infrastructure/heal-reporter';
-import type { TestResultRecord } from '../../../src/domain/trace-event-recorder/model/statement-trace-schema';
+import type {
+  TestAttachmentsRecord,
+  TestResultRecord,
+} from '../../../src/domain/trace-event-recorder/model/statement-trace-schema';
 
 let tmpDir: string;
 let projectOutputDir: string;
@@ -893,5 +897,135 @@ describe('HealTracerReporter — onRescue hook', () => {
 
     expect(messages.some((m: string) => m.includes('onRescue hook failed'))).toBe(true);
     expect(messages.some((m: string) => m.includes('collector unreachable'))).toBe(true);
+  });
+});
+
+describe('HealTracerReporter — onAttachmentsWritten hook', () => {
+  it('invokes the hook with the test-attachments record + correlation context after a clean append', async () => {
+    const { ndjsonPath, rootDir, playwrightOutputDir } = setupTest({
+      testId: 'tid-42',
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const calls: Array<{ record: TestAttachmentsRecord; ctx: AttachmentsContext }> = [];
+
+    const reporter = newReporter({
+      onAttachmentsWritten: (record, ctx) => {
+        calls.push({ record, ctx });
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase({ id: 'tid-42' }),
+      fakeResult({ workerIndex: 5, status: 'passed', duration: 10, retry: 0 }),
+    );
+
+    // Hook fires from a microtask — wait two turns before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].record.kind).toBe('test-attachments');
+    expect(Array.isArray(calls[0].record.attachments)).toBe(true);
+    expect(calls[0].ctx).toMatchObject({
+      ndjsonPath,
+      rootDir,
+      playwrightOutputDir,
+      executionId: 'exec-1',
+      testId: 'tid-42',
+      attempt: 1,
+      workerIndex: 5,
+    });
+  });
+
+  it('does NOT invoke the hook when no registry entry exists for the test', async () => {
+    // No setupTest() — registry is empty, traceCtx is null, the
+    // reporter short-circuits before reaching the hook site.
+    let called = false;
+    const reporter = newReporter({
+      onAttachmentsWritten: () => {
+        called = true;
+      },
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 1 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('does NOT invoke the hook when the test-attachments append fails', async () => {
+    setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    let called = false;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      const reporter = newReporter({
+        appendFile: () => {
+          throw new Error('disk full');
+        },
+        onAttachmentsWritten: () => {
+          called = true;
+        },
+      });
+      reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 1 }));
+      await Promise.resolve();
+      await Promise.resolve();
+    } finally {
+      errSpy.mockRestore();
+    }
+    expect(called).toBe(false);
+  });
+
+  it('swallows hook errors and logs them via the unified logger', async () => {
+    setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const reporter = newReporter({
+      onAttachmentsWritten: () => Promise.reject(new Error('collector unreachable')),
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 1 }));
+    for (let i = 0; i < 5; i++) await Promise.resolve();
+
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(messages.some((m: string) => m.includes('onAttachmentsWritten hook failed'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('collector unreachable'))).toBe(true);
+  });
+
+  it('awaits in-flight hook promises in onEnd so trailing artefact shipping is not lost', async () => {
+    setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    let hookResolved = false;
+    const reporter = newReporter({
+      onAttachmentsWritten: () =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            hookResolved = true;
+            resolve();
+          }, 30),
+        ),
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 1 }));
+
+    // Without the onEnd await, the hook would still be in-flight here.
+    expect(hookResolved).toBe(false);
+
+    // onEnd returns a Promise (the reporter is now async on this hook).
+    await reporter.onEnd?.();
+
+    expect(hookResolved).toBe(true);
   });
 });

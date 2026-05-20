@@ -17,6 +17,8 @@ export type {
   VideoPageInfo,
   RescueContext,
   RescueHook,
+  AttachmentsContext,
+  AttachmentsHook,
 } from './heal-tracer-reporter';
 export { CrashErrorClassifier } from './crash-error-classifier';
 export type { TestInfoErrorLike } from './crash-error-classifier';
