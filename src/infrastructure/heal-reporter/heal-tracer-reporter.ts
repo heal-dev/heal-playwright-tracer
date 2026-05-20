@@ -159,6 +159,44 @@ export interface RescueContext extends HealTraceContext {
  */
 export type RescueHook = (record: TestResultRecord, ctx: RescueContext) => void | Promise<void>;
 
+/**
+ * Context handed to the `onAttachmentsWritten` hook. Same fields as
+ * `RescueContext` — the hook needs the same per-test correlation —
+ * but kept as its own type so consumers don't have to import an
+ * unrelated name (`RescueContext`) to use a non-rescue hook.
+ */
+export interface AttachmentsContext extends HealTraceContext {
+  /** Playwright `TestCase.id` — stable hash of (file, title, project). */
+  testId: string;
+  /** 1-indexed attempt number = `TestResult.retry + 1`. */
+  attempt: number;
+  /** `TestResult.workerIndex` the test ran on. */
+  workerIndex: number;
+}
+
+/**
+ * Invoked synchronously after the reporter has appended a
+ * `test-attachments` record to the NDJSON. The record is the same
+ * one written to disk — including any video `pageName`/`pageUrl`
+ * already resolved by `copyAndBuildAttachmentsRecord`. Intended for
+ * extensions that need to forward the attachment list (or its
+ * referenced files) to a live destination — typically a remote
+ * collector that uploads artefacts to object storage.
+ *
+ * The hook may return a Promise. Returned promises are tracked and
+ * awaited by the reporter's `onEnd` so the trailing test's work
+ * isn't lost when Playwright exits. Errors are caught and logged
+ * to stderr; a failing hook never breaks the Playwright run.
+ *
+ * Fired for every test, including those whose `test-result` was
+ * synthesized by the crash-rescue path — so crashed tests' artefacts
+ * are still shipped through the hook.
+ */
+export type AttachmentsHook = (
+  record: TestAttachmentsRecord,
+  ctx: AttachmentsContext,
+) => void | Promise<void>;
+
 export interface HealTracerReporterDeps {
   classifier?: CrashErrorClassifier;
   inspector?: NdjsonTailInspector;
@@ -170,6 +208,7 @@ export interface HealTracerReporterDeps {
    */
   appendFile?: (path: string, data: string) => void;
   onRescue?: RescueHook;
+  onAttachmentsWritten?: AttachmentsHook;
 }
 
 /** Path to the registry file for a given (project, test, attempt). */
@@ -187,6 +226,11 @@ export class HealTracerReporter implements Reporter {
   private readonly failingStatementFinder: FailingStatementFinder;
   private readonly appendFile: (path: string, data: string) => void;
   private readonly onRescue: RescueHook | null;
+  private readonly onAttachmentsWritten: AttachmentsHook | null;
+  // In-flight hook promises — awaited by `onEnd` so the trailing
+  // test's hook (which typically POSTs artefacts to a remote
+  // destination) has a chance to complete before the process exits.
+  private readonly pendingAttachmentsHooks: Promise<void>[] = [];
   private readonly stderrByWorker = new Map<number, string[]>();
   private projectOutputDirs: string[] = [];
 
@@ -209,6 +253,7 @@ export class HealTracerReporter implements Reporter {
     this.failingStatementFinder = deps.failingStatementFinder ?? new FailingStatementFinder();
     this.appendFile = deps.appendFile ?? ((p, d) => fs.appendFileSync(p, d, { encoding: 'utf8' }));
     this.onRescue = deps.onRescue ?? null;
+    this.onAttachmentsWritten = deps.onAttachmentsWritten ?? null;
   }
 
   printsToStdio(): boolean {
@@ -303,8 +348,10 @@ export class HealTracerReporter implements Reporter {
     // source of truth — Playwright's `outputDir` can be wiped, the
     // history survives.
     const attachmentsRecord = this.copyAndBuildAttachmentsRecord(result, traceCtx);
+    let attachmentsAppended = false;
     try {
       this.appendFile(traceCtx.ndjsonPath, JSON.stringify(attachmentsRecord) + '\n');
+      attachmentsAppended = true;
     } catch (err) {
       log.error(`failed to append test-attachments to ${traceCtx.ndjsonPath}`, err);
     }
@@ -315,6 +362,13 @@ export class HealTracerReporter implements Reporter {
 
     if (rescuedRecord) {
       this.invokeRescueHook(rescuedRecord, traceCtx, test, result);
+    }
+
+    // Fire the attachments hook only when the record actually hit
+    // disk — a downstream that reads the NDJSON expecting consistency
+    // with what was POSTed would otherwise see drift.
+    if (attachmentsAppended) {
+      this.invokeAttachmentsHook(attachmentsRecord, traceCtx, test, result);
     }
   }
 
@@ -510,6 +564,35 @@ export class HealTracerReporter implements Reporter {
       });
   }
 
+  private invokeAttachmentsHook(
+    record: TestAttachmentsRecord,
+    traceCtx: HealTraceContext,
+    test: TestCase,
+    result: TestResult,
+  ): void {
+    if (!this.onAttachmentsWritten) return;
+    const ctx: AttachmentsContext = {
+      ndjsonPath: traceCtx.ndjsonPath,
+      rootDir: traceCtx.rootDir,
+      playwrightOutputDir: traceCtx.playwrightOutputDir,
+      executionId: traceCtx.executionId,
+      testId: test.id,
+      attempt: result.retry + 1,
+      workerIndex: result.workerIndex,
+    };
+    // Tracked: `onEnd` awaits these so a trailing test's hook (which
+    // typically POSTs artefacts to a remote destination) has time to
+    // complete before the process exits. Errors swallowed + logged
+    // here so a slow or failing hook still doesn't block the
+    // Playwright run.
+    const promise = Promise.resolve()
+      .then(() => this.onAttachmentsWritten!(record, ctx))
+      .catch((err: unknown) => {
+        log.error('onAttachmentsWritten hook failed', err);
+      });
+    this.pendingAttachmentsHooks.push(promise);
+  }
+
   /**
    * Upsert the per-test entry for `test` and append an attempt slice
    * built from `result`. When `ndjsonPath` is non-null and the
@@ -605,7 +688,15 @@ export class HealTracerReporter implements Reporter {
     }
   }
 
-  onEnd(): void {
+  async onEnd(): Promise<void> {
+    // Await in-flight `onAttachmentsWritten` hooks first so trailing
+    // tests' artefact-shipping completes before the manifest write
+    // and process exit. `allSettled` because errors are already
+    // logged inside the hook wrapper — we just need to wait.
+    if (this.pendingAttachmentsHooks.length > 0) {
+      await Promise.allSettled(this.pendingAttachmentsHooks);
+    }
+
     if (this.executionId.length === 0) return;
 
     const layout = new HealTracesLayout(this.rootDir, this.executionId);
