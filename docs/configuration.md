@@ -150,6 +150,86 @@ complementary "what did the whole page look like at the end"
 artefact for consumers that want it without scanning the
 `test-attachments` record.
 
+### Forwarding attachments to a remote destination (`onAttachmentsWritten`)
+
+The reporter exposes an `onAttachmentsWritten` hook for extensions
+that need to ship the per-test `test-attachments` record — and the
+artefacts it references (`trace.zip`, videos, failure screenshots,
+user `testInfo.attach()` files) — to a remote destination as soon
+as the test finishes. Typical use is a collector that uploads
+artefacts to object storage and emits a per-artifact event downstream;
+the hook removes the need for that collector to re-parse the NDJSON
+file or run as a separate Playwright reporter.
+
+The hook receives the same record that was just appended to
+`heal-traces.ndjson` — already enriched with each video's
+synthetic `pageName` (`'main'`, `'page-1'`, …) and the `pageUrl`
+the test left the page on — plus a correlation context:
+
+```ts
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+import type { AttachmentsHook } from '@heal-dev/heal-playwright-tracer/reporter';
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+
+const shipAttachments: AttachmentsHook = async (record, ctx) => {
+  // record:  { kind: 'test-attachments', attachments: TestAttachment[] }
+  // ctx:     { ndjsonPath, rootDir, playwrightOutputDir, executionId,
+  //            testId, attempt, workerIndex }
+  for (const att of record.attachments) {
+    // The reporter has already copied every attachment into the
+    // persistent heal-traces tree — read from there, not from
+    // Playwright's outputDir, so the path is durable.
+    const abs = path.join(ctx.rootDir, att.path);
+    await uploadToS3(fs.createReadStream(abs), {
+      testId: ctx.testId,
+      attempt: ctx.attempt,
+      name: att.name,
+      contentType: att.contentType,
+      // Video attachments only; undefined on traces and screenshots.
+      pageName: att.pageName,
+      pageUrl: att.pageUrl,
+    });
+  }
+};
+
+export default defineConfig({
+  reporter: [
+    ['@heal-dev/heal-playwright-tracer/reporter', { onAttachmentsWritten: shipAttachments }],
+  ],
+  // ...
+});
+```
+
+**Lifecycle.** The hook is invoked from the reporter's `onTestEnd`
+immediately after the `test-attachments` line hits disk. It fires
+for every test, including those whose `test-result` was synthesized
+by the crash-rescue path, so crashed tests' artefacts still ship.
+The returned Promise is tracked and awaited by the reporter's
+`onEnd`, so a trailing test's in-flight upload completes before
+Playwright exits — without that wait the last test's artefacts
+could be lost on process exit.
+
+**Error handling.** Hook errors are caught and logged
+(`[heal-playwright-tracer] [error] onAttachmentsWritten hook
+failed`); a slow or failing hook never breaks the Playwright run
+or prevents the on-disk append from landing.
+
+**Not invoked when.** The hook is silent when the test has no
+registry entry (tracer not wired for it), when the per-test
+NDJSON file is missing, or when the `test-attachments` append
+itself fails — a downstream that expects on-disk consistency with
+what was POSTed would otherwise see drift.
+
+**Read from `ctx.rootDir`, not `ctx.playwrightOutputDir`.** By the
+time the hook fires the reporter has already copied every
+attachment into `<ctx.rootDir>/` under the canonical layout
+(`videos/`, `screenshots/`, `trace.zip`). Reading from there gives
+you the persistent, durable copy that survives a wipe of
+Playwright's `outputDir` and is the same layout every other
+heal-traces consumer (local viewer, sidecar, backend) reads.
+
 ## `configureTracer`
 
 `configureTracer` registers extra exporters (fanned out alongside
