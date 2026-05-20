@@ -47,13 +47,14 @@ function fakeConfig(): FullConfig {
   } as unknown as FullConfig;
 }
 
-function fakeTestCase(opts: { id?: string; title?: string } = {}): TestCase {
+function fakeTestCase(opts: { id?: string; title?: string; tags?: string[] } = {}): TestCase {
   return {
     id: opts.id ?? 'tid-abc',
     title: opts.title ?? 't',
     titlePath: () => ['', 'suite', opts.title ?? 't'],
     location: { file: '/repo/x.spec.ts' },
     parent: { project: () => ({ name: 'chromium' }) },
+    tags: opts.tags ?? [],
   } as unknown as TestCase;
 }
 
@@ -590,6 +591,82 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
     expect(lines).toHaveLength(2);
     const ids = lines.map((l) => (JSON.parse(l) as ExecutionRecord).executionId);
     expect(ids).toEqual(['exec-1', 'exec-2']);
+  });
+
+  it('persists testCase.tags verbatim on each ExecutionTestEntry', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-tags';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    reporter.onTestEnd?.(
+      fakeTestCase({ id: 'tid-tagged', title: 'tagged', tags: ['@heal-42', '@smoke'] }),
+      fakeResult(),
+    );
+    reporter.onTestEnd?.(fakeTestCase({ id: 'tid-untagged', title: 'untagged' }), fakeResult());
+
+    await reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(tmpDir, 'heal-traces', 'exec-tags', 'execution.json'), 'utf8'),
+    ) as ExecutionManifest;
+
+    const tagged = manifest.tests.find((t) => t.playwrightTestId === 'tid-tagged');
+    const untagged = manifest.tests.find((t) => t.playwrightTestId === 'tid-untagged');
+    expect(tagged?.tags).toEqual(['@heal-42', '@smoke']);
+    // Untagged test gets an empty array (Playwright's default when no
+    // tags were declared), not undefined — the field is always present
+    // on freshly-written manifests.
+    expect(untagged?.tags).toEqual([]);
+  });
+
+  it('preserves tags across retries (set on first attempt, kept on subsequent)', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-tags-retry';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    const test = fakeTestCase({ id: 'tid-flaky', title: 'flaky', tags: ['@heal-9', '@slow'] });
+    reporter.onTestEnd?.(test, fakeResult({ status: 'failed', retry: 0 }));
+    reporter.onTestEnd?.(test, fakeResult({ status: 'passed', retry: 1 }));
+
+    await reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpDir, 'heal-traces', 'exec-tags-retry', 'execution.json'),
+        'utf8',
+      ),
+    ) as ExecutionManifest;
+    expect(manifest.tests).toHaveLength(1);
+    expect(manifest.tests[0].tags).toEqual(['@heal-9', '@slow']);
+    expect(manifest.tests[0].attempts).toHaveLength(2);
+  });
+
+  it('defaults to an empty tags array when TestCase has no `tags` property', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-tags-missing';
+    const reporter = new HealTracerReporter();
+    reporter.onBegin?.(fakeConfig(), {} as never);
+
+    // Construct a TestCase whose `tags` property is absent entirely —
+    // exercises the `?? []` fallback in upsertTestEntry, which the
+    // existing fakeTestCase helper can't reach (it always sets tags).
+    const testWithoutTagsField = {
+      id: 'tid-no-tags-field',
+      title: 't',
+      titlePath: () => ['', 'suite', 't'],
+      location: { file: '/repo/x.spec.ts' },
+      parent: { project: () => ({ name: 'chromium' }) },
+    } as unknown as TestCase;
+
+    reporter.onTestEnd?.(testWithoutTagsField, fakeResult());
+    await reporter.onEnd?.();
+
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(tmpDir, 'heal-traces', 'exec-tags-missing', 'execution.json'),
+        'utf8',
+      ),
+    ) as ExecutionManifest;
+    expect(manifest.tests[0].tags).toEqual([]);
   });
 
   it('records source="generated" when HEAL_EXECUTION_ID was unset at onBegin', async () => {
