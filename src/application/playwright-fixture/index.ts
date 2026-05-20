@@ -354,33 +354,23 @@ export const test = base.extend<TraceFixtures>({
       try {
         await use();
       } finally {
-        // Map each Playwright-recorded video back to the page that
-        // produced it, captured here (before any teardown hook
-        // navigates or closes a page) so `pageUrl` reflects where
-        // the test body left the page. Best-effort: any failure just
-        // leaves the video attachments un-enriched. Re-writes the
-        // registry entry the reporter reads in `onTestEnd` — that
-        // hook runs after this fixture returns, so it sees the
-        // augmented entry. Skipped entirely when `recordVideo` is off
-        // (`page.video()` is null), so it costs nothing then.
+        // Record each video-recording page's identity (synthetic
+        // role label + URL) here, before any teardown hook navigates
+        // or closes a page, so `pageUrl` reflects where the test body
+        // left the page. The reporter pairs this list positionally
+        // with `result.attachments` video entries — we cannot match
+        // by path because Playwright renames the video file between
+        // this teardown and the reporter's `onTestEnd`. Best-effort:
+        // any failure just leaves the video attachments un-enriched.
+        // Skipped entirely when `recordVideo` is off (`page.video()`
+        // is null), so it costs nothing then.
         try {
           const videoPages: VideoPageInfo[] = [];
           let pageIndex = 0;
           for (const p of page.context().pages()) {
-            const video = p.video();
-            if (!video) continue;
+            if (!p.video()) continue;
             const name = p === page ? 'main' : `page-${(pageIndex += 1)}`;
-            let videoFile: string;
-            try {
-              videoFile = await video.path();
-            } catch {
-              continue;
-            }
-            videoPages.push({
-              video: path.relative(testInfo.outputDir, videoFile).split(path.sep).join('/'),
-              name,
-              url: p.url(),
-            });
+            videoPages.push({ name, url: p.url() });
           }
           if (videoPages.length > 0) {
             fs.writeFileSync(

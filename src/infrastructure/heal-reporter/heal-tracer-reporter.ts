@@ -81,18 +81,21 @@ export const HEAL_PENDING_SUBDIR = '.heal-pending';
 
 /**
  * One entry of the `videoPages` array the fixture writes into the
- * registry at teardown — maps a Playwright-recorded video file back
- * to the page it captured so the reporter can stamp `pageName` /
- * `pageUrl` onto the matching video attachment.
+ * registry at teardown. Carries the per-page identity the reporter
+ * needs to stamp `pageName` / `pageUrl` onto the corresponding video
+ * attachment.
+ *
+ * No file-path field: Playwright renames each recording from its
+ * `.playwright-artifacts-N/<hash>.webm` recording location to a
+ * deterministic `<outputDir>/video[-N].webm` AFTER the fixture's
+ * teardown but BEFORE the reporter's `onTestEnd`, so any path the
+ * fixture could capture is stale by the time the reporter sees it.
+ *
+ * The join is positional instead: the fixture pushes entries in the
+ * same order as `page.context().pages()`, and the reporter pairs the
+ * Nth video attachment in `result.attachments` with `videoPages[N]`.
  */
 export interface VideoPageInfo {
-  /**
-   * Video file path RELATIVE to Playwright's outputDir, forward
-   * slashes — matched against the same outputDir-relative path the
-   * reporter computes for each attachment, so the join is exact even
-   * when several pages produce a same-named `video.webm`.
-   */
-  video: string;
   /** Synthetic role label: `'main'`, `'page-1'`, `'page-2'`, … */
   name: string;
   /** Page URL captured at fixture teardown. */
@@ -382,11 +385,15 @@ export class HealTracerReporter implements Reporter {
     const dstRoot = path.resolve(traceCtx.rootDir);
     const attachments: TestAttachment[] = [];
 
-    // Key the video→page map by the outputDir-relative path so the
-    // join is exact even when several pages produce a `video.webm`.
-    const videoByRel = new Map<string, VideoPageInfo>(
-      (traceCtx.videoPages ?? []).map((vp) => [vp.video, vp]),
-    );
+    // Positional join with the fixture's `videoPages` array: the Nth
+    // video attachment in `result.attachments` pairs with the Nth
+    // entry in `videoPages`. We can't join by path because Playwright
+    // renames the video file between fixture teardown (recording-time
+    // hash name) and reporter onTestEnd (final `video[-N].webm`).
+    // Both sides walk pages/attachments in creation order, so index
+    // is stable.
+    const videoPages = traceCtx.videoPages ?? [];
+    let videoIndex = 0;
 
     for (const att of result.attachments ?? []) {
       if (!att.path) continue;
@@ -417,8 +424,8 @@ export class HealTracerReporter implements Reporter {
       };
 
       if (att.contentType.toLowerCase().startsWith('video/')) {
-        const relFromSrcPosix = relFromSrc.split(path.sep).join('/');
-        const vp = videoByRel.get(relFromSrcPosix);
+        const vp = videoPages[videoIndex];
+        videoIndex += 1;
         if (vp) {
           entry.pageName = vp.name;
           entry.pageUrl = vp.url;
@@ -681,10 +688,10 @@ function sanitizeVideoPages(raw: unknown): VideoPageInfo[] | undefined {
   const out: VideoPageInfo[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
-    const { video, name, url } = item as Record<string, unknown>;
-    if (typeof video !== 'string' || video.length === 0) continue;
-    if (typeof name !== 'string' || typeof url !== 'string') continue;
-    out.push({ video, name, url });
+    const { name, url } = item as Record<string, unknown>;
+    if (typeof name !== 'string' || name.length === 0) continue;
+    if (typeof url !== 'string') continue;
+    out.push({ name, url });
   }
   return out.length > 0 ? out : undefined;
 }
