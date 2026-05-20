@@ -661,6 +661,11 @@ export class HealTracerReporter implements Reporter {
     const project =
       (test as unknown as { parent?: { project?: () => { name?: string } } }).parent?.project?.()
         ?.name ?? '';
+    // Playwright's `TestCase.tags` already merges tags from enclosing
+    // describe blocks; we persist them verbatim — no parsing or
+    // de-duplication here (consumers like heal-cli own any
+    // tag-prefix interpretation).
+    const tags = (test as unknown as { tags?: string[] }).tags ?? [];
 
     const entry: ExecutionTestEntry = {
       playwrightTestId: test.id,
@@ -668,6 +673,7 @@ export class HealTracerReporter implements Reporter {
       titlePath,
       file,
       project,
+      tags,
       attempts: [],
     };
     this.testEntriesById.set(test.id, entry);

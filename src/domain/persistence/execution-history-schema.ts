@@ -90,6 +90,22 @@ export interface ExecutionTestEntry {
   file: string;
   project: string;
   /**
+   * Verbatim copy of Playwright's `TestCase.tags`. Persisted so
+   * downstream consumers (local viewer, eval harnesses, external
+   * integrations) can filter / group / interpret tags without
+   * re-running Playwright. The tracer stays agnostic of any
+   * tag-prefix conventions — consumers parse what they need.
+   *
+   * Inheritance: Playwright merges tags from enclosing
+   * `test.describe(...)` blocks into each `TestCase.tags`, so a tag
+   * on the describe propagates to every child test. We persist what
+   * Playwright reports, no de-duplication.
+   *
+   * Optional for backwards compatibility: older `execution.json`
+   * files written before this field existed simply omit it.
+   */
+  tags?: string[];
+  /**
    * One entry per Playwright retry, ordered by `attempt` ascending.
    * Always non-empty — a test that never ran has no entry at all.
    */
