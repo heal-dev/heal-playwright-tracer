@@ -418,11 +418,7 @@ describe('HealTracerReporter — attachments', () => {
         '{"kind":"test-result","status":"passed","duration":10}\n',
     });
     const traceSrc = writeSrc(playwrightOutputDir, 'trace.zip', 'TRACE');
-    const videoSrc = writeSrc(
-      playwrightOutputDir,
-      path.join('pages', 'page-1', 'video.webm'),
-      'VIDEO',
-    );
+    const videoSrc = writeSrc(playwrightOutputDir, 'video.webm', 'VIDEO');
 
     // Simulate the fixture's teardown re-write of the registry entry.
     const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
@@ -431,9 +427,7 @@ describe('HealTracerReporter — attachments', () => {
       registryPath,
       JSON.stringify({
         ...base,
-        videoPages: [
-          { video: 'pages/page-1/video.webm', name: 'main', url: 'https://example.com/checkout' },
-        ],
+        videoPages: [{ name: 'main', url: 'https://example.com/checkout' }],
       }),
     );
 
@@ -503,20 +497,17 @@ describe('HealTracerReporter — attachments', () => {
     ]);
   });
 
-  it('disambiguates multiple same-named videos by their outputDir-relative path', () => {
+  it('pairs the Nth video attachment with videoPages[N] (positional join)', () => {
     const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
       ndjsonContent:
         '{"kind":"test-header","schemaVersion":1}\n' +
         '{"kind":"test-result","status":"passed","duration":10}\n',
     });
-    // Two pages both produce a file literally named `video.webm`;
-    // only the outputDir-relative path tells them apart.
-    const mainSrc = writeSrc(playwrightOutputDir, path.join('pages', 'main', 'video.webm'), 'MAIN');
-    const secondSrc = writeSrc(
-      playwrightOutputDir,
-      path.join('pages', 'second', 'video.webm'),
-      'SECOND',
-    );
+    // Two pages → two videos. Playwright names them differently in
+    // outputDir (`video.webm`, `video-1.webm`) but the reporter joins
+    // by position, not by name.
+    const mainSrc = writeSrc(playwrightOutputDir, 'video.webm', 'MAIN');
+    const popupSrc = writeSrc(playwrightOutputDir, 'video-1.webm', 'POPUP');
 
     const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
     const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
@@ -525,8 +516,8 @@ describe('HealTracerReporter — attachments', () => {
       JSON.stringify({
         ...base,
         videoPages: [
-          { video: 'pages/main/video.webm', name: 'main', url: 'https://app.test/home' },
-          { video: 'pages/second/video.webm', name: 'page-1', url: 'https://app.test/oauth' },
+          { name: 'main', url: 'https://app.test/home' },
+          { name: 'page-1', url: 'https://app.test/oauth' },
         ],
       }),
     );
@@ -539,7 +530,7 @@ describe('HealTracerReporter — attachments', () => {
         duration: 10,
         attachments: [
           { name: 'video', path: mainSrc, contentType: 'video/webm' },
-          { name: 'video', path: secondSrc, contentType: 'video/webm' },
+          { name: 'video', path: popupSrc, contentType: 'video/webm' },
         ],
       } as unknown as Partial<TestResult>),
     );
@@ -547,8 +538,6 @@ describe('HealTracerReporter — attachments', () => {
     const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
       attachments: Array<{ name: string; pageName?: string; pageUrl?: string }>;
     };
-    // Both copied to the same `videos/video.webm` slot, but each
-    // attachment carries the page identity its source path resolved to.
     expect(last.attachments).toEqual([
       {
         name: 'video',
@@ -559,11 +548,63 @@ describe('HealTracerReporter — attachments', () => {
       },
       {
         name: 'video',
-        path: 'videos/video.webm',
+        path: 'videos/video-1.webm',
         contentType: 'video/webm',
         pageName: 'page-1',
         pageUrl: 'https://app.test/oauth',
       },
+    ]);
+  });
+
+  it('leaves a surplus video un-enriched when fewer videoPages entries than video attachments', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const aSrc = writeSrc(playwrightOutputDir, 'video.webm', 'A');
+    const bSrc = writeSrc(playwrightOutputDir, 'video-1.webm', 'B');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        // Only one entry — the second video attachment has no pair.
+        // Defensive: covers a popup closed before fixture teardown so
+        // its `page.video()` returned null but Playwright still
+        // finalized the file later.
+        videoPages: [{ name: 'main', url: 'https://app.test/home' }],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          { name: 'video', path: aSrc, contentType: 'video/webm' },
+          { name: 'video', path: bSrc, contentType: 'video/webm' },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{ name: string; pageName?: string; pageUrl?: string }>;
+    };
+    expect(last.attachments).toEqual([
+      {
+        name: 'video',
+        path: 'videos/video.webm',
+        contentType: 'video/webm',
+        pageName: 'main',
+        pageUrl: 'https://app.test/home',
+      },
+      // Surplus video — no pair in videoPages, stays un-enriched.
+      { name: 'video', path: 'videos/video-1.webm', contentType: 'video/webm' },
     ]);
   });
 
@@ -573,8 +614,8 @@ describe('HealTracerReporter — attachments', () => {
         '{"kind":"test-header","schemaVersion":1}\n' +
         '{"kind":"test-result","status":"passed","duration":10}\n',
     });
-    const okSrc = writeSrc(playwrightOutputDir, path.join('ok', 'video.webm'), 'OK');
-    const badSrc = writeSrc(playwrightOutputDir, path.join('bad', 'video.webm'), 'BAD');
+    const aSrc = writeSrc(playwrightOutputDir, 'video.webm', 'A');
+    const bSrc = writeSrc(playwrightOutputDir, 'video-1.webm', 'B');
 
     const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
     const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
@@ -585,8 +626,8 @@ describe('HealTracerReporter — attachments', () => {
         videoPages: [
           null,
           'string-item',
-          { video: 'bad/video.webm', name: 'main' }, // missing `url`
-          { video: 'ok/video.webm', name: 'main', url: 'https://app.test/ok' },
+          { name: 'page-1' }, // missing `url`
+          { name: 'main', url: 'https://app.test/ok' },
         ],
       }),
     );
@@ -598,8 +639,8 @@ describe('HealTracerReporter — attachments', () => {
         status: 'passed',
         duration: 10,
         attachments: [
-          { name: 'video', path: okSrc, contentType: 'video/webm' },
-          { name: 'video', path: badSrc, contentType: 'video/webm' },
+          { name: 'video', path: aSrc, contentType: 'video/webm' },
+          { name: 'video', path: bSrc, contentType: 'video/webm' },
         ],
       } as unknown as Partial<TestResult>),
     );
@@ -607,8 +648,9 @@ describe('HealTracerReporter — attachments', () => {
     const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
       attachments: Array<{ name: string; pageName?: string; pageUrl?: string }>;
     };
-    // Only the well-formed entry enriched its video; the one whose
-    // entry was missing `url` is left untouched (no crash, no partial).
+    // Sanitization drops the three malformed entries → only the
+    // well-formed entry survives at videoPages[0], so the FIRST video
+    // attachment is enriched. The second has no pair → un-enriched.
     expect(last.attachments).toEqual([
       {
         name: 'video',
@@ -617,7 +659,7 @@ describe('HealTracerReporter — attachments', () => {
         pageName: 'main',
         pageUrl: 'https://app.test/ok',
       },
-      { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
+      { name: 'video', path: 'videos/video-1.webm', contentType: 'video/webm' },
     ]);
   });
 
