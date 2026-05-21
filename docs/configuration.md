@@ -230,6 +230,60 @@ you the persistent, durable copy that survives a wipe of
 Playwright's `outputDir` and is the same layout every other
 heal-traces consumer (local viewer, sidecar, backend) reads.
 
+### Forwarding a run-finished signal (`onExecutionEnd`)
+
+The reporter exposes a companion `onExecutionEnd` hook for
+extensions that need a run-level signal — typically a remote
+collector that drives downstream state when an execution finishes
+(e.g. marking a queued execution as `finished` once every per-test
+upload has been POSTed). Per-test wiring belongs in
+`onAttachmentsWritten`; this hook is the run-level bookend.
+
+It receives the same `ExecutionRecord` that was just appended to
+`heal-traces/executions.ndjson` plus a correlation context:
+
+```ts
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+import type { ExecutionEndHook } from '@heal-dev/heal-playwright-tracer/reporter';
+
+const signalRunFinished: ExecutionEndHook = async (record, ctx) => {
+  // record: { kind: 'execution', executionId, totals, tests, ... }
+  // ctx:    { executionId, executionDir }
+  await markExecutionFinished({
+    executionId: ctx.executionId,
+    totals: record.totals,
+    status: record.status,
+  });
+};
+
+export default defineConfig({
+  reporter: [['@heal-dev/heal-playwright-tracer/reporter', { onExecutionEnd: signalRunFinished }]],
+  // ...
+});
+```
+
+**Lifecycle.** The hook fires from the reporter's `onEnd` **after**
+the reporter has attempted to write `execution.json` and append to
+`executions.ndjson`. The returned Promise is awaited inline before
+`onEnd` resolves, so the signal completes before Playwright exits.
+A transient FS failure on either write is logged but does **not**
+suppress the hook — losing the run-finished signal because of a
+disk hiccup would be worse than letting the downstream proceed
+without the on-disk record. If your downstream depends on the
+durable artefacts existing, re-check them inside the hook.
+
+**Error handling.** Hook errors are caught and logged
+(`[heal-playwright-tracer] [error] onExecutionEnd hook failed`); a
+slow or failing hook never breaks the Playwright run or prevents
+the on-disk writes from landing.
+
+**`ctx.executionDir`** is the absolute path to
+`<rootDir>/heal-traces/<executionId>/` — the per-execution
+directory holding `execution.json` and every per-test subtree. Use
+it to locate the manifest or per-test artefacts the hook may want
+to reference.
+
 ## `configureTracer`
 
 `configureTracer` registers extra exporters (fanned out alongside

@@ -197,6 +197,40 @@ export type AttachmentsHook = (
   ctx: AttachmentsContext,
 ) => void | Promise<void>;
 
+/**
+ * Context handed to the `onExecutionEnd` hook. Carries the
+ * cross-test correlation a downstream needs to route the run-level
+ * record — the executionId and the heal-traces root.
+ */
+export interface ExecutionEndContext {
+  /** Same executionId carried in the `ExecutionRecord`. */
+  executionId: string;
+  /**
+   * Absolute path to the per-execution directory under the
+   * persistent heal-traces tree (`<rootDir>/heal-traces/<executionId>/`).
+   * Lets a downstream locate the manifest and per-test directories.
+   */
+  executionDir: string;
+}
+
+/**
+ * Invoked from `onEnd` after the reporter has written
+ * `execution.json` and appended the `ExecutionRecord` line to
+ * `executions.ndjson`. Intended for extensions that need to forward
+ * a run-finished signal to a live destination — typically a remote
+ * collector that drives downstream state (e.g. marking a queued
+ * execution as finished).
+ *
+ * The hook may return a Promise. The reporter awaits it before
+ * `onEnd` resolves so the signal completes before Playwright exits.
+ * Errors are caught and logged to stderr; a failing hook never
+ * breaks the Playwright run.
+ */
+export type ExecutionEndHook = (
+  record: ExecutionRecord,
+  ctx: ExecutionEndContext,
+) => void | Promise<void>;
+
 export interface HealTracerReporterDeps {
   classifier?: CrashErrorClassifier;
   inspector?: NdjsonTailInspector;
@@ -209,6 +243,7 @@ export interface HealTracerReporterDeps {
   appendFile?: (path: string, data: string) => void;
   onRescue?: RescueHook;
   onAttachmentsWritten?: AttachmentsHook;
+  onExecutionEnd?: ExecutionEndHook;
 }
 
 /** Path to the registry file for a given (project, test, attempt). */
@@ -227,6 +262,7 @@ export class HealTracerReporter implements Reporter {
   private readonly appendFile: (path: string, data: string) => void;
   private readonly onRescue: RescueHook | null;
   private readonly onAttachmentsWritten: AttachmentsHook | null;
+  private readonly onExecutionEnd: ExecutionEndHook | null;
   // In-flight hook promises — awaited by `onEnd` so the trailing
   // test's hook (which typically POSTs artefacts to a remote
   // destination) has a chance to complete before the process exits.
@@ -254,6 +290,7 @@ export class HealTracerReporter implements Reporter {
     this.appendFile = deps.appendFile ?? ((p, d) => fs.appendFileSync(p, d, { encoding: 'utf8' }));
     this.onRescue = deps.onRescue ?? null;
     this.onAttachmentsWritten = deps.onAttachmentsWritten ?? null;
+    this.onExecutionEnd = deps.onExecutionEnd ?? null;
   }
 
   printsToStdio(): boolean {
@@ -746,6 +783,23 @@ export class HealTracerReporter implements Reporter {
       this.appendFile(layout.executionsNdjsonPath(), JSON.stringify(record) + '\n');
     } catch (err) {
       log.error('failed to append executions.ndjson', err);
+    }
+
+    // Run-finished hook: fires after the on-disk writes so a
+    // downstream that crashes mid-POST can't lose the durable
+    // record. Awaited inline so the POST completes before `onEnd`
+    // resolves and Playwright exits. Errors swallowed + logged so a
+    // slow or failing hook never breaks the run.
+    if (this.onExecutionEnd) {
+      const ctx: ExecutionEndContext = {
+        executionId: this.executionId,
+        executionDir: layout.executionDir(),
+      };
+      try {
+        await this.onExecutionEnd(record, ctx);
+      } catch (err) {
+        log.error('onExecutionEnd hook failed', err);
+      }
     }
   }
 }
