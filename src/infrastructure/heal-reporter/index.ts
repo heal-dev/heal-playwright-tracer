@@ -19,6 +19,8 @@ export type {
   RescueHook,
   AttachmentsContext,
   AttachmentsHook,
+  ExecutionEndContext,
+  ExecutionEndHook,
 } from './heal-tracer-reporter';
 export { CrashErrorClassifier } from './crash-error-classifier';
 export type { TestInfoErrorLike } from './crash-error-classifier';

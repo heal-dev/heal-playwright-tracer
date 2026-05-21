@@ -4,7 +4,7 @@
  * Please see the LICENSE file at the root of this repository
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -667,6 +667,189 @@ describe('HealTracerReporter — onEnd manifest + executions.ndjson', () => {
       ),
     ) as ExecutionManifest;
     expect(manifest.tests[0].tags).toEqual([]);
+  });
+
+  it('invokes onExecutionEnd hook with the ExecutionRecord and ctx after writing on-disk artefacts', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-hook';
+    const calls: Array<{
+      record: ExecutionRecord;
+      ctx: { executionId: string; executionDir: string };
+    }> = [];
+    const reporter = new HealTracerReporter({
+      onExecutionEnd: (record, ctx) => {
+        // Hook must fire AFTER the on-disk writes so the durable
+        // record exists even if the hook itself throws.
+        const manifestExists = fs.existsSync(
+          path.join(tmpDir, 'heal-traces', 'exec-hook', 'execution.json'),
+        );
+        const ndjsonExists = fs.existsSync(path.join(tmpDir, 'heal-traces', 'executions.ndjson'));
+        expect(manifestExists).toBe(true);
+        expect(ndjsonExists).toBe(true);
+        calls.push({ record, ctx });
+      },
+    });
+    reporter.onBegin?.(fakeConfig(), {} as never);
+    reporter.onTestEnd?.(fakeTestCase(), fakeResult());
+    await reporter.onEnd?.();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].ctx.executionId).toBe('exec-hook');
+    expect(fs.realpathSync(calls[0].ctx.executionDir)).toBe(
+      fs.realpathSync(path.join(tmpDir, 'heal-traces', 'exec-hook')),
+    );
+
+    // The record handed to the hook must match the line just
+    // appended to executions.ndjson byte-for-byte — a downstream
+    // collector that re-reads from disk should see the exact same
+    // payload it received in-memory.
+    const ndjsonLine = fs
+      .readFileSync(path.join(tmpDir, 'heal-traces', 'executions.ndjson'), 'utf8')
+      .split('\n')
+      .filter((l) => l.length > 0)
+      .pop()!;
+    expect(JSON.parse(ndjsonLine)).toEqual(calls[0].record);
+  });
+
+  it('does NOT invoke onExecutionEnd when onBegin was never called (executionId empty)', async () => {
+    // No onBegin call → this.executionId stays '' and onEnd
+    // short-circuits before any of the run-end writes or the hook.
+    let called = false;
+    const reporter = new HealTracerReporter({
+      onExecutionEnd: () => {
+        called = true;
+      },
+    });
+    await reporter.onEnd?.();
+
+    expect(called).toBe(false);
+    // And the durable artefacts were not produced either, confirming
+    // the short-circuit fired.
+    expect(fs.existsSync(path.join(tmpDir, 'heal-traces', 'executions.ndjson'))).toBe(false);
+  });
+
+  it('fires onExecutionEnd only after in-flight onAttachmentsWritten promises drain', async () => {
+    // The reporter awaits pendingAttachmentsHooks at the top of
+    // onEnd, then writes the manifest, then calls onExecutionEnd.
+    // A downstream collector relies on per-test uploads finishing
+    // before the run-finished signal.
+    process.env.HEAL_EXECUTION_ID = 'exec-order';
+    let attachmentsHookDone = false;
+    let attachmentsHookDoneAtRunEnd: boolean | null = null;
+
+    stageNdjson({
+      executionId: 'exec-order',
+      testId: 'tid-order',
+      attempt: 1,
+      lines: [
+        { kind: 'test-header', test: { executionId: 'exec-order' } },
+        { kind: 'test-result', status: 'passed', duration: 1 },
+      ],
+    });
+
+    const reporter = new HealTracerReporter({
+      onAttachmentsWritten: () =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            attachmentsHookDone = true;
+            resolve();
+          }, 30),
+        ),
+      onExecutionEnd: () => {
+        attachmentsHookDoneAtRunEnd = attachmentsHookDone;
+      },
+    });
+    reporter.onBegin?.(fakeConfig(), {} as never);
+    reporter.onTestEnd?.(fakeTestCase({ id: 'tid-order' }), fakeResult({ workerIndex: 0 }));
+    // Without the drain in onEnd, the attachments hook is still
+    // in-flight at this point — guards against the test passing for
+    // the wrong reason if setTimeout were ever to fire faster.
+    expect(attachmentsHookDone).toBe(false);
+
+    await reporter.onEnd?.();
+
+    expect(attachmentsHookDoneAtRunEnd).toBe(true);
+  });
+
+  it('awaits the onExecutionEnd hook before onEnd resolves', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-await';
+    let resolved = false;
+    const reporter = new HealTracerReporter({
+      onExecutionEnd: async () => {
+        await new Promise((r) => setTimeout(r, 20));
+        resolved = true;
+      },
+    });
+    reporter.onBegin?.(fakeConfig(), {} as never);
+    reporter.onTestEnd?.(fakeTestCase(), fakeResult());
+    await reporter.onEnd?.();
+
+    expect(resolved).toBe(true);
+  });
+
+  it('fires onExecutionEnd even when on-disk writes fail (downstream signal is preserved)', async () => {
+    // Deliberate contract: a transient FS hiccup that breaks the
+    // manifest write or the executions.ndjson append must NOT lose
+    // the run-finished signal to the downstream. Both writes are
+    // independently caught + logged; the hook runs unconditionally
+    // afterwards.
+    process.env.HEAL_EXECUTION_ID = 'exec-fs-fail';
+
+    // Force fs.writeFileSync to fail naturally: pre-create the
+    // manifest path as a directory so the file write hits EISDIR.
+    // (vi.spyOn on the fs namespace doesn't work under ESM.)
+    fs.mkdirSync(path.join(tmpDir, 'heal-traces', 'exec-fs-fail', 'execution.json'), {
+      recursive: true,
+    });
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    let called = false;
+    const reporter = new HealTracerReporter({
+      appendFile: () => {
+        throw new Error('ndjson disk full');
+      },
+      onExecutionEnd: () => {
+        called = true;
+      },
+    });
+    reporter.onBegin?.(fakeConfig(), {} as never);
+    reporter.onTestEnd?.(fakeTestCase(), fakeResult());
+    await reporter.onEnd?.();
+
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(called).toBe(true);
+    // Both failures were logged through the unified logger.
+    expect(messages.some((m: string) => m.includes('failed to write execution.json'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('failed to append executions.ndjson'))).toBe(
+      true,
+    );
+  });
+
+  it('swallows onExecutionEnd hook errors and logs them via the unified logger', async () => {
+    process.env.HEAL_EXECUTION_ID = 'exec-throw';
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const reporter = new HealTracerReporter({
+      onExecutionEnd: () => {
+        throw new Error('downstream is down');
+      },
+    });
+    reporter.onBegin?.(fakeConfig(), {} as never);
+    reporter.onTestEnd?.(fakeTestCase(), fakeResult());
+
+    await expect(reporter.onEnd?.()).resolves.toBeUndefined();
+
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(messages.some((m: string) => m.includes('onExecutionEnd hook failed'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('downstream is down'))).toBe(true);
+
+    // The durable record still landed on disk.
+    expect(fs.existsSync(path.join(tmpDir, 'heal-traces', 'exec-throw', 'execution.json'))).toBe(
+      true,
+    );
   });
 
   it('records source="generated" when HEAL_EXECUTION_ID was unset at onBegin', async () => {
