@@ -267,6 +267,190 @@ describe('LocalViewerServer', () => {
     expect(res.status).toBe(204);
     expect(res.headers.get('access-control-allow-private-network')).toBe('true');
   });
+
+  // --- /api/exec routes ------------------------------------------------
+
+  it('POST /api/exec with disallowed bin returns 403', async () => {
+    const res = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin: 'bash', args: [] }),
+    });
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('POST /api/exec with allowed bin returns 200 + jobId (spawn entrypoint)', async () => {
+    // The spawn will fail with ENOENT (no `heal` binary in tests), but
+    // the endpoint replies 200 because the failure surfaces async via
+    // GET /api/exec/:jobId. This only proves the allowlist + spawn
+    // entrypoint accept the request.
+    const res = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin: 'heal', args: ['whoami', '--json'] }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { jobId: string };
+    expect(body.jobId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+  });
+
+  it('POST /api/exec with invalid JSON body returns 400', async () => {
+    const res = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{bin:',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(typeof body.error).toBe('string');
+  });
+
+  it('POST /api/exec with malformed body shape returns 400', async () => {
+    const cases: unknown[] = [
+      {},
+      { bin: 'heal' },
+      { bin: 'heal', args: 'whoami' },
+      { bin: 42, args: [] },
+      { bin: 'heal', args: [1, 2, 3] },
+    ];
+    for (const c of cases) {
+      const res = await fetch(`${baseUrl}/api/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(c),
+      });
+      expect(res.status, `case=${JSON.stringify(c)}`).toBe(400);
+    }
+  });
+
+  it('POST /api/exec with oversized body is rejected (cap enforced)', async () => {
+    // The 64 KB cap is enforced mid-stream by destroying the request.
+    // From the client side this surfaces as either:
+    //   - a 400 response with `{ error: 'Request body too large' }` (if
+    //     the response made it out before the socket was destroyed), or
+    //   - a fetch failure (socket closed mid-write).
+    // Both outcomes prove the cap is enforced; we accept either.
+    const big = { bin: 'heal', args: ['x'.repeat(65 * 1024)] };
+    let status: number | 'fetch-failed' = 'fetch-failed';
+    let errorBody: string | null = null;
+    try {
+      const res = await fetch(`${baseUrl}/api/exec`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(big),
+      });
+      status = res.status;
+      try {
+        const j = (await res.json()) as { error?: string };
+        errorBody = j.error ?? null;
+      } catch {
+        errorBody = await res.text().catch(() => null);
+      }
+    } catch {
+      status = 'fetch-failed';
+    }
+    if (status === 'fetch-failed') {
+      expect(status).toBe('fetch-failed');
+    } else {
+      expect(status).toBe(400);
+      expect((errorBody ?? '').toLowerCase()).toContain('too large');
+    }
+  });
+
+  it('GET /api/exec/:jobId for unknown id returns 404 with error body', async () => {
+    const res = await fetch(`${baseUrl}/api/exec/00000000-0000-0000-0000-000000000000`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe('Unknown jobId');
+  });
+
+  it('GET /api/exec/:jobId for known id returns 200 + snapshot shape', async () => {
+    const post = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin: 'heal', args: ['whoami'] }),
+    });
+    expect(post.status).toBe(200);
+    const { jobId } = (await post.json()) as { jobId: string };
+
+    const res = await fetch(`${baseUrl}/api/exec/${jobId}`);
+    expect(res.status).toBe(200);
+    const snap = (await res.json()) as {
+      jobId: string;
+      status: string;
+      exitCode: number | null;
+      stdout: unknown;
+      stderr: unknown;
+    };
+    expect(snap.jobId).toBe(jobId);
+    expect(['running', 'exited']).toContain(snap.status);
+    expect(Array.isArray(snap.stdout)).toBe(true);
+    expect(Array.isArray(snap.stderr)).toBe(true);
+    expect(snap.exitCode === null || typeof snap.exitCode === 'number').toBe(true);
+  });
+
+  it('GET /api/exec without id falls through (no method gate hit)', async () => {
+    // GET /api/exec doesn't match the /api/exec/:jobId regex; it
+    // falls through past every API matcher and reaches serveStatic,
+    // which (for an extensionless path) SPA-falls-back to index.html.
+    const res = await fetch(`${baseUrl}/api/exec`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('SPA');
+  });
+
+  it('POST /api/executions still rejected (method gate)', async () => {
+    const res = await fetch(`${baseUrl}/api/executions`, { method: 'POST' });
+    expect(res.status).toBe(405);
+  });
+
+  // --- serveStatic asset-vs-SPA behaviour -----------------------------
+
+  it('GET /missing.js returns 404 (not SPA fallback)', async () => {
+    const res = await fetch(`${baseUrl}/missing.js`);
+    expect(res.status).toBe(404);
+    const body = await res.text();
+    expect(body).not.toContain('SPA');
+  });
+
+  it('GET /missing.css returns 404', async () => {
+    const res = await fetch(`${baseUrl}/missing.css`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /missing.png returns 404', async () => {
+    const res = await fetch(`${baseUrl}/missing.png`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /deep/path/missing.js returns 404 (nested asset-looking path)', async () => {
+    const res = await fetch(`${baseUrl}/deep/path/missing.js`);
+    expect(res.status).toBe(404);
+  });
+
+  it('GET /unknown/deep/path (extensionless) still SPA-falls-back to index.html', async () => {
+    const res = await fetch(`${baseUrl}/unknown/deep/path`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('SPA');
+  });
+
+  it('GET /index.html returns 200 with index.html content', async () => {
+    const res = await fetch(`${baseUrl}/index.html`);
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('SPA');
+  });
+
+  it('GET /app.js serves the bundled asset with JS MIME', async () => {
+    const res = await fetch(`${baseUrl}/app.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe('application/javascript; charset=utf-8');
+    const body = await res.text();
+    expect(body).toContain('console.log');
+  });
 });
 
 describe('LocalViewerServer.boundPort()', () => {
@@ -299,5 +483,158 @@ describe('LocalViewerServer.boundPort()', () => {
     expect(p).not.toBe(0);
     expect(p! >= 1024).toBe(true);
     await s.stop();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────
+// /api/.../analyze endpoints. Tests that need a live `heal` process
+// (the "started-only + alive job → running" case) are intentionally
+// skipped — exercising that path would require a fake `heal` binary
+// since POST hardcodes the bin. The shape covered here is the full
+// file-state machine, plus POST validation.
+// ───────────────────────────────────────────────────────────────────
+
+interface AnalyzeStatusBody {
+  status: 'running' | 'completed' | 'failed';
+  verdict?: { verdictType: string; failingStatementIndex: number; description: string };
+  message?: string;
+  events?: { event: string; timestamp: number }[];
+}
+
+const analyzeDir = (testId: string): string => path.join(root, 'heal-traces', EXEC, testId, '1');
+
+const writeAnalyzeFile = async (testId: string, lines: string[]): Promise<void> => {
+  await mkdir(analyzeDir(testId), { recursive: true });
+  await writeFile(path.join(analyzeDir(testId), 'analyze.ndjson'), lines.join('\n'), 'utf-8');
+};
+
+const analyzeUrl = (testId: string): string =>
+  `${baseUrl}/api/executions/${EXEC}/tests/${testId}/1/analyze`;
+
+describe('LocalViewerServer analyze endpoints', () => {
+  it('POST analyze returns 200 + jobId for valid params', async () => {
+    const res = await fetch(analyzeUrl('t-analyze-post-ok'), { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { jobId: string };
+    expect(body.jobId).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('POST analyze rejects an unsafe executionId with 400', async () => {
+    // `foo..bar` matches the route regex but trips isSafeIdForRouting's
+    // `..`-include check. A whole-segment `..` would be normalized away
+    // by WHATWG URL parsing before reaching our code.
+    const res = await fetch(`${baseUrl}/api/executions/foo..bar/tests/t1/1/analyze`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('executionId');
+  });
+
+  it('POST analyze rejects an unsafe testId with 400', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/foo..bar/1/analyze`, {
+      method: 'POST',
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toContain('playwrightTestId');
+  });
+
+  it('POST analyze rejects a non-numeric attempt with 405 (no route match)', async () => {
+    // The route regex requires \d+ for the attempt segment; a non-numeric
+    // value misses the route entirely and falls through to the static
+    // handler. Lock that behaviour in.
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/t1/abc/analyze`, {
+      method: 'POST',
+    });
+    // POST on a path that doesn't match the analyze route gets 405 from
+    // the generic method gate.
+    expect([404, 405]).toContain(res.status);
+  });
+
+  it('GET analyze rejects an unsafe executionId with 400', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/foo..bar/tests/t1/1/analyze`);
+    expect(res.status).toBe(400);
+  });
+
+  it('GET analyze returns 404 when there is no file and no recorded job', async () => {
+    const testId = 't-analyze-missing';
+    // Don't write a file, don't POST — purely "no analyze for this test".
+    const res = await fetch(analyzeUrl(testId));
+    expect(res.status).toBe(404);
+  });
+
+  it('GET analyze returns `completed` when the file has a terminal verdict', async () => {
+    const testId = 't-analyze-verdict';
+    await writeAnalyzeFile(testId, [
+      JSON.stringify({ event: 'started', timestamp: 1 }),
+      JSON.stringify({
+        event: 'verdict',
+        timestamp: 2,
+        verdict: {
+          verdictType: 'BUG',
+          failingStatementIndex: 3,
+          description: 'click did not navigate',
+          reasoning: 'expected URL to change',
+          model: 'opus-4.6-high',
+          latencyMs: 24210,
+        },
+      }),
+    ]);
+    const res = await fetch(analyzeUrl(testId));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AnalyzeStatusBody;
+    expect(body.status).toBe('completed');
+    expect(body.verdict?.verdictType).toBe('BUG');
+    expect(body.verdict?.failingStatementIndex).toBe(3);
+    expect(body.events).toHaveLength(2);
+  });
+
+  it('GET analyze returns `failed` when the file has a terminal error', async () => {
+    const testId = 't-analyze-error';
+    await writeAnalyzeFile(testId, [
+      JSON.stringify({ event: 'started', timestamp: 1 }),
+      JSON.stringify({ event: 'error', timestamp: 2, message: 'LLM call timed out' }),
+    ]);
+    const res = await fetch(analyzeUrl(testId));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AnalyzeStatusBody;
+    expect(body.status).toBe('failed');
+    expect(body.message).toBe('LLM call timed out');
+    expect(body.events).toHaveLength(2);
+  });
+
+  it('GET analyze returns `failed` (crash) when only `started` is present and no job is alive', async () => {
+    const testId = 't-analyze-crash';
+    await writeAnalyzeFile(testId, [JSON.stringify({ event: 'started', timestamp: 1 })]);
+    const res = await fetch(analyzeUrl(testId));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AnalyzeStatusBody;
+    expect(body.status).toBe('failed');
+    expect(body.message).toMatch(/without writing a terminal event/);
+    expect(body.events).toHaveLength(1);
+  });
+
+  it('GET analyze ignores garbage lines and returns the verdict found among them', async () => {
+    const testId = 't-analyze-garbage';
+    await writeAnalyzeFile(testId, [
+      'not-json',
+      JSON.stringify({ event: 'started', timestamp: 1 }),
+      '{ unterminated',
+      JSON.stringify({
+        event: 'verdict',
+        timestamp: 2,
+        verdict: {
+          verdictType: 'NO_VERDICT',
+          failingStatementIndex: 0,
+          description: 'could not determine',
+        },
+      }),
+    ]);
+    const res = await fetch(analyzeUrl(testId));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as AnalyzeStatusBody;
+    expect(body.status).toBe('completed');
+    expect(body.verdict?.verdictType).toBe('NO_VERDICT');
   });
 });

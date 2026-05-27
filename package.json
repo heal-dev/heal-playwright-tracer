@@ -39,6 +39,10 @@
     "./reporter": {
       "types": "./dist/infrastructure/heal-reporter/index.d.ts",
       "default": "./dist/infrastructure/heal-reporter/index.js"
+    },
+    "./local-server-api": {
+      "types": "./dist/infrastructure/local-viewer-adapter/local-server-api-types.d.ts",
+      "default": "./dist/infrastructure/local-viewer-adapter/local-server-api-types.js"
     }
   },
   "files": [
