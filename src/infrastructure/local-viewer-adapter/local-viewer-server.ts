@@ -22,23 +22,41 @@
 // the trust boundary: every URL parameter is run through a path-
 // traversal guard before we touch the filesystem.
 
-import { createReadStream, statSync } from 'node:fs';
+import { createReadStream, statSync, writeFileSync } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import * as http from 'node:http';
 import * as path from 'node:path';
 
 import { HealTracesLayout } from '../heal-traces-layout';
 
+import { loadAnalyzeNdjson } from './analyze-ndjson-loader';
 import {
   buildIndex,
   discoverExecutions,
   discoverTraces,
   isSafeIdForRouting,
-  type ExecutionSummary,
-  type TestSummary,
-  type ViewerIndex,
 } from './discover-traces';
+import { ExecJobManager } from './exec-job-manager';
+import type {
+  AnalyzeRunStartResponse,
+  AnalyzeRunStatus,
+  ApiErrorResponse,
+  AttachmentRef,
+  ExecJobSnapshot,
+  ExecSpawnResponse,
+  ExecutionSummary,
+  ExecutionsResponse,
+  IndexResponse,
+  TestSummary,
+  TraceResponse,
+} from './local-server-api-types';
 import { loadTrace, rewriteScreenshots } from './ndjson-trace-loader';
+
+const EXEC_BODY_MAX_BYTES = 64 * 1024;
+
+// The viewer's auth chip only ever spawns `heal whoami` / `heal login`
+// — this OSS tracer is the entry point to the paid heal-cli funnel.
+const ALLOWED_EXEC_BIN = 'heal';
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -84,6 +102,39 @@ const sendText = (res: http.ServerResponse, status: number, text: string): void 
   res.end(text);
 };
 
+const readJsonBody = (req: http.IncomingMessage, maxBytes: number): Promise<unknown> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    req.on('data', (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > maxBytes) {
+        reject(new Error('Request body too large'));
+        req.destroy();
+
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf-8')));
+      } catch {
+        reject(new Error('Invalid JSON body'));
+      }
+    });
+    req.on('error', reject);
+  });
+
+const isExecRequestBody = (body: unknown): body is { bin: string; args: string[] } => {
+  if (!body || typeof body !== 'object') return false;
+  const b = body as { bin?: unknown; args?: unknown };
+
+  return (
+    typeof b.bin === 'string' && Array.isArray(b.args) && b.args.every((a) => typeof a === 'string')
+  );
+};
+
 const streamFile = (res: http.ServerResponse, filePath: string): void => {
   let size: number;
   try {
@@ -113,17 +164,33 @@ export interface LocalViewerServerOptions {
    */
   hostname?: string;
   log?: (msg: string) => void;
+  /**
+   * When true, every spawned subprocess's stdout/stderr is mirrored to
+   * the tracer's own stdout/stderr (in addition to being captured in
+   * the per-job buffer that the HTTP API exposes). Useful for
+   * debugging viewer-triggered `heal analyze` / `heal login` runs
+   * without re-running the CLI by hand.
+   */
+  verbose?: boolean;
 }
 
 export class LocalViewerServer {
   private server: http.Server | null = null;
   private readonly options: LocalViewerServerOptions;
   // executionId → cached per-execution index; lazily populated.
-  private readonly indexCacheByExec = new Map<string, ViewerIndex>();
+  private readonly indexCacheByExec = new Map<string, IndexResponse>();
   private executionsCache: ExecutionSummary[] | null = null;
+  private readonly execJobs: ExecJobManager;
+  // Tracks the most recent `heal analyze` job per
+  // `${executionId}/${playwrightTestId}/${attempt}` triple. Lets GET
+  // report "running" before `analyze.ndjson` lands, and "failed
+  // (crash)" if the file is half-written but the spawning process is
+  // already gone.
+  private readonly activeAnalyzeJobs = new Map<string, string>();
 
   constructor(options: LocalViewerServerOptions) {
     this.options = options;
+    this.execJobs = new ExecJobManager(options.rootDir, { verbose: options.verbose });
   }
 
   async start(): Promise<void> {
@@ -159,6 +226,8 @@ export class LocalViewerServer {
   }
 
   stop(): Promise<void> {
+    this.execJobs.shutdown();
+
     return new Promise<void>((resolve) => {
       if (!this.server) {
         resolve();
@@ -171,7 +240,7 @@ export class LocalViewerServer {
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     // Chrome Private Network Access: a public HTTPS origin (e.g.
     // trace.playwright.dev) fetching a private address (localhost)
@@ -184,14 +253,45 @@ export class LocalViewerServer {
 
       return;
     }
+
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const pathname = decodeURIComponent(url.pathname);
+
+    // POST is only valid for /api/exec; everything else is GET-only.
+    if (pathname === '/api/exec' && req.method === 'POST') {
+      await this.serveExecSpawn(req, res);
+
+      return;
+    }
+
+    const execStatusMatch = /^\/api\/exec\/([0-9a-f-]+)$/.exec(pathname);
+    if (execStatusMatch && req.method === 'GET') {
+      this.serveExecStatus(res, execStatusMatch[1]);
+
+      return;
+    }
+
+    const analyzeMatch = /^\/api\/executions\/([^/]+)\/tests\/([^/]+)\/(\d+)\/analyze$/.exec(
+      pathname,
+    );
+    if (analyzeMatch) {
+      if (req.method === 'POST') {
+        this.serveAnalyzeStart(res, analyzeMatch[1], analyzeMatch[2], analyzeMatch[3]);
+
+        return;
+      }
+      if (req.method === 'GET') {
+        await this.serveAnalyzeStatus(res, analyzeMatch[1], analyzeMatch[2], analyzeMatch[3]);
+
+        return;
+      }
+    }
+
     if (req.method !== 'GET') {
       sendText(res, 405, 'Method not allowed');
 
       return;
     }
-
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = decodeURIComponent(url.pathname);
 
     if (pathname === '/api/executions') {
       await this.serveExecutions(res);
@@ -238,14 +338,198 @@ export class LocalViewerServer {
     await this.serveStatic(res, pathname);
   }
 
+  private async serveExecSpawn(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    let body: unknown;
+    try {
+      body = await readJsonBody(req, EXEC_BODY_MAX_BYTES);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Invalid body';
+      sendJson(res, 400, { error: message });
+
+      return;
+    }
+
+    if (!isExecRequestBody(body)) {
+      sendJson(res, 400, { error: 'Body must be { bin: string, args: string[] }' });
+
+      return;
+    }
+
+    if (body.bin !== ALLOWED_EXEC_BIN) {
+      sendJson(res, 403, {
+        error: `Only '${ALLOWED_EXEC_BIN}' may be spawned via /api/exec.`,
+      });
+
+      return;
+    }
+
+    const jobId = this.execJobs.spawn(body.bin, body.args);
+    const response: ExecSpawnResponse = { jobId };
+    sendJson(res, 200, response);
+  }
+
+  private serveExecStatus(res: http.ServerResponse, jobId: string): void {
+    const snapshot: ExecJobSnapshot | null = this.execJobs.get(jobId);
+    if (!snapshot) {
+      sendJson(res, 404, { error: 'Unknown jobId' } satisfies ApiErrorResponse);
+
+      return;
+    }
+    sendJson(res, 200, snapshot);
+  }
+
+  private serveAnalyzeStart(
+    res: http.ServerResponse,
+    rawExecutionId: string,
+    rawTestId: string,
+    rawAttempt: string,
+  ): void {
+    if (!isSafeIdForRouting(rawExecutionId)) {
+      sendJson(res, 400, { error: 'Bad executionId' } satisfies ApiErrorResponse);
+
+      return;
+    }
+    if (!isSafeIdForRouting(rawTestId)) {
+      sendJson(res, 400, { error: 'Bad playwrightTestId' } satisfies ApiErrorResponse);
+
+      return;
+    }
+    const attempt = this.parseAttempt(rawAttempt);
+    if (attempt === null) {
+      sendJson(res, 400, { error: 'Bad attempt' } satisfies ApiErrorResponse);
+
+      return;
+    }
+
+    // Re-run: truncate any prior `analyze.ndjson` BEFORE we spawn so the
+    // next GET sees an empty file (paired with an active job → `running`)
+    // instead of the previous run's terminal event. Without this, a
+    // viewer polling the GET endpoint during the brief window between
+    // POST returning and the CLI's first write would surface the old
+    // verdict/error.
+    const layout = new HealTracesLayout(this.options.rootDir, rawExecutionId);
+    const priorNdjsonPath = layout.analyzeNdjsonPath(rawTestId, attempt);
+    try {
+      writeFileSync(priorNdjsonPath, '');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        this.options.log?.(
+          `[heal-tracer] failed to truncate prior analyze.ndjson at ${priorNdjsonPath}: ${(err as Error).message}`,
+        );
+      }
+      // ENOENT (parent dir missing) is fine — the CLI's publisher
+      // creates the file on first event.
+    }
+
+    const compoundId = `${rawExecutionId}/${rawTestId}/${attempt}`;
+    const jobId = this.execJobs.spawn('heal', ['analyze', '--test', compoundId, '--ndjson']);
+    this.activeAnalyzeJobs.set(compoundId, jobId);
+
+    const response: AnalyzeRunStartResponse = { jobId };
+    sendJson(res, 200, response);
+  }
+
+  private async serveAnalyzeStatus(
+    res: http.ServerResponse,
+    rawExecutionId: string,
+    rawTestId: string,
+    rawAttempt: string,
+  ): Promise<void> {
+    if (!isSafeIdForRouting(rawExecutionId)) {
+      sendJson(res, 400, { error: 'Bad executionId' } satisfies ApiErrorResponse);
+
+      return;
+    }
+    if (!isSafeIdForRouting(rawTestId)) {
+      sendJson(res, 400, { error: 'Bad playwrightTestId' } satisfies ApiErrorResponse);
+
+      return;
+    }
+    const attempt = this.parseAttempt(rawAttempt);
+    if (attempt === null) {
+      sendJson(res, 400, { error: 'Bad attempt' } satisfies ApiErrorResponse);
+
+      return;
+    }
+
+    const compoundId = `${rawExecutionId}/${rawTestId}/${attempt}`;
+    const layout = new HealTracesLayout(this.options.rootDir, rawExecutionId);
+    const ndjsonPath = layout.analyzeNdjsonPath(rawTestId, attempt);
+    const content = await loadAnalyzeNdjson(ndjsonPath);
+    const jobAlive = this.isAnalyzeJobAlive(compoundId);
+
+    // No file yet.
+    if (!content) {
+      if (jobAlive) {
+        const status: AnalyzeRunStatus = { status: 'running' };
+        sendJson(res, 200, status);
+
+        return;
+      }
+      sendJson(res, 404, { error: 'No analyze run for this test' } satisfies ApiErrorResponse);
+
+      return;
+    }
+
+    // File present — let the terminal event (if any) drive the response,
+    // falling back to the live job state otherwise.
+    const terminal = content.terminal;
+    if (terminal && terminal.event === 'verdict') {
+      const status: AnalyzeRunStatus = {
+        status: 'completed',
+        verdict: terminal.verdict,
+        events: content.events,
+      };
+      sendJson(res, 200, status);
+
+      return;
+    }
+    if (terminal && terminal.event === 'error') {
+      const status: AnalyzeRunStatus = {
+        status: 'failed',
+        message: terminal.message,
+        events: content.events,
+      };
+      sendJson(res, 200, status);
+
+      return;
+    }
+
+    // Non-terminal file (only `started` so far). Process either still
+    // running, or crashed without finishing — distinguish via the
+    // exec-job snapshot.
+    if (jobAlive) {
+      const status: AnalyzeRunStatus = { status: 'running' };
+      sendJson(res, 200, status);
+
+      return;
+    }
+    const status: AnalyzeRunStatus = {
+      status: 'failed',
+      message: 'analyze process exited without writing a terminal event',
+      events: content.events,
+    };
+    sendJson(res, 200, status);
+  }
+
+  private isAnalyzeJobAlive(compoundId: string): boolean {
+    const jobId = this.activeAnalyzeJobs.get(compoundId);
+    if (!jobId) return false;
+    const snap = this.execJobs.get(jobId);
+    if (!snap) return false;
+    return snap.status === 'running';
+  }
+
   private async serveExecutions(res: http.ServerResponse): Promise<void> {
     if (!this.executionsCache) {
       this.executionsCache = await discoverExecutions(this.options.rootDir);
     }
-    sendJson(res, 200, { executions: this.executionsCache });
+    const response: ExecutionsResponse = { executions: this.executionsCache };
+    sendJson(res, 200, response);
   }
 
-  private async loadIndex(executionId: string): Promise<ViewerIndex | null> {
+  private async loadIndex(executionId: string): Promise<IndexResponse | null> {
     if (this.indexCacheByExec.has(executionId)) {
       return this.indexCacheByExec.get(executionId) ?? null;
     }
@@ -272,7 +556,23 @@ export class LocalViewerServer {
 
       return;
     }
-    sendJson(res, 200, index);
+    // Layer `hasAnalyzeVerdict` per-test fresh on each request — the
+    // cached index from loadIndex deliberately holds it as `false`
+    // because analyze status changes any time a verdict is written.
+    // Reading analyze.ndjson per test is cheap (small files) and
+    // avoids cache-invalidation coordination across spawn lifecycles.
+    const layout = new HealTracesLayout(this.options.rootDir, executionId);
+    const tests = await Promise.all(
+      index.tests.map(async (t) => {
+        const analyzePath = layout.analyzeNdjsonPath(t.playwrightTestId, t.attempt);
+        const content = await loadAnalyzeNdjson(analyzePath);
+        return {
+          ...t,
+          hasAnalyzeVerdict: content?.terminal?.event === 'verdict',
+        };
+      }),
+    );
+    sendJson(res, 200, { ...index, tests });
   }
 
   private findSummary(
@@ -342,18 +642,19 @@ export class LocalViewerServer {
         .map((segment) => encodeURIComponent(segment))
         .join('/');
 
-    const attachments = summary.attachments.map((a) => ({
+    const attachments: AttachmentRef[] = summary.attachments.map((a) => ({
       url: `${baseAssetUrl}/${encodePath(a.path)}`,
       name: a.name,
       path: a.path,
       contentType: a.contentType,
     }));
-    sendJson(res, 200, {
+    const response: TraceResponse = {
       header: trace.header,
       statements: rewritten,
       result: trace.result,
       attachments,
-    });
+    };
+    sendJson(res, 200, response);
   }
 
   private async serveAsset(
@@ -463,15 +764,30 @@ export class LocalViewerServer {
 
       return;
     }
+    // A missing path with a non-HTML extension must 404, not SPA-fallback to
+    // index.html — otherwise the browser receives text/html for a request it
+    // expected to be JS/CSS/etc. and rejects it (Strict MIME for module
+    // scripts). Only extensionless paths (or .html) get the SPA fallback.
+    const ext = path.extname(rel).toLowerCase();
+    const isAssetPath = ext !== '' && ext !== '.html';
     try {
       const s = await stat(filePath);
       if (!s.isFile()) {
-        // SPA fallback: any deep path → index.html so client routing works.
+        if (isAssetPath) {
+          sendText(res, 404, 'Not found');
+
+          return;
+        }
         streamFile(res, path.join(this.options.bundleDir, 'index.html'));
 
         return;
       }
     } catch {
+      if (isAssetPath) {
+        sendText(res, 404, 'Not found');
+
+        return;
+      }
       streamFile(res, path.join(this.options.bundleDir, 'index.html'));
 
       return;

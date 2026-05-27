@@ -70,8 +70,13 @@ export class CommanderCliAdapter {
     this.program
       .command('view')
       .description('Serve the local trace viewer over an http server')
-      .action(async () => {
-        await this.handleView();
+      .option(
+        '--verbose',
+        'Mirror spawned subprocess output (e.g. `heal analyze`, `heal login`) ' +
+          'to the tracer console. Useful for debugging viewer-triggered runs.',
+      )
+      .action(async (opts: { verbose?: boolean }) => {
+        await this.handleView(opts);
       });
   }
 
@@ -79,7 +84,7 @@ export class CommanderCliAdapter {
     (this.options.log ?? console.log.bind(console))(msg);
   }
 
-  private async handleView(): Promise<void> {
+  private async handleView(opts: { verbose?: boolean }): Promise<void> {
     const rootDir = process.cwd();
 
     const bundleDir = this.options.bundleDir ?? defaultBundleDir();
@@ -96,6 +101,7 @@ export class CommanderCliAdapter {
       bundleDir,
       port: RANDOM_PORT,
       log: (m) => this.log(m),
+      verbose: opts.verbose,
     });
 
     await server.start();

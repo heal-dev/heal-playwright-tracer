@@ -17,6 +17,8 @@
 
 import * as path from 'path';
 
+import { ANALYZE_NDJSON_FILENAME } from '../local-viewer-adapter/local-server-api-types';
+
 export class HealTracesLayout {
   static readonly DIRNAME = 'heal-traces';
   static readonly NDJSON_FILENAME = 'heal-traces.ndjson';
@@ -27,6 +29,7 @@ export class HealTracesLayout {
   static readonly VIDEOS_SUBDIR = 'videos';
   static readonly EXECUTIONS_NDJSON = 'executions.ndjson';
   static readonly EXECUTION_MANIFEST = 'execution.json';
+  static readonly ANALYZE_NDJSON_FILENAME = ANALYZE_NDJSON_FILENAME;
 
   constructor(
     readonly rootDir: string,
@@ -47,6 +50,13 @@ export class HealTracesLayout {
 
   ndjsonPath(playwrightTestId: string, attempt: number): string {
     return path.join(this.testDir(playwrightTestId, attempt), HealTracesLayout.NDJSON_FILENAME);
+  }
+
+  analyzeNdjsonPath(playwrightTestId: string, attempt: number): string {
+    return path.join(
+      this.testDir(playwrightTestId, attempt),
+      HealTracesLayout.ANALYZE_NDJSON_FILENAME,
+    );
   }
 
   networkNdjsonPath(playwrightTestId: string, attempt: number): string {

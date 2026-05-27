@@ -41002,37 +41002,32 @@ const OC = h.createContext(null),
     const n = h.useMemo(() => t ?? null, [t]);
     return y.jsx(kC.Provider, { value: n, children: e });
   },
-  DC = h.createContext(null),
-  BU = ({ children: e, quotaSlot: t }) => {
-    const n = h.useMemo(() => t ?? null, [t]);
-    return y.jsx(DC.Provider, { value: n, children: e });
-  },
-  FU = { canWriteTriagedVerdict: !1, canWriteFinalVerdict: !1 },
-  ZU = { verdictForm: !0 },
+  BU = { canWriteTriagedVerdict: !1, canWriteFinalVerdict: !1 },
+  FU = { verdictForm: !0 },
+  ZU = (e) => ({ ...BU, ...(e ?? {}) }),
   GU = (e) => ({ ...FU, ...(e ?? {}) }),
-  qU = (e) => ({ ...ZU, ...(e ?? {}) }),
-  IC = h.createContext(null),
-  YU = ({ children: e, capabilities: t, features: n }) => {
-    const a = h.useMemo(() => ({ capabilities: GU(t), features: qU(n) }), [t, n]);
-    return y.jsx(IC.Provider, { value: a, children: e });
+  DC = h.createContext(null),
+  qU = ({ children: e, capabilities: t, features: n }) => {
+    const a = h.useMemo(() => ({ capabilities: ZU(t), features: GU(n) }), [t, n]);
+    return y.jsx(DC.Provider, { value: a, children: e });
   },
-  jC = (e) => {
+  IC = (e) => {
     const t = [];
-    for (const n of e) (t.push(n), n.children.length > 0 && t.push(...jC(n.children)));
+    for (const n of e) (t.push(n), n.children.length > 0 && t.push(...IC(n.children)));
     return t;
   },
-  VC = (e, t = 0) => e.flatMap((n) => [{ statement: n, indent: t }, ...VC(n.children, t + 1)]),
-  PC = h.createContext(null),
-  WU = ({ children: e, testList: t, currentTest: n, loading: a = !1 }) => {
-    const s = h.useMemo(() => (n ? jC(n.statements) : []), [n]),
+  jC = (e, t = 0) => e.flatMap((n) => [{ statement: n, indent: t }, ...jC(n.children, t + 1)]),
+  VC = h.createContext(null),
+  YU = ({ children: e, testList: t, currentTest: n, loading: a = !1 }) => {
+    const s = h.useMemo(() => (n ? IC(n.statements) : []), [n]),
       o = h.useMemo(
         () => ({ testList: t, currentTest: n, flatStatements: s, loading: a }),
         [t, n, s, a],
       );
-    return y.jsx(PC.Provider, { value: o, children: e });
+    return y.jsx(VC.Provider, { value: o, children: e });
   },
-  zC = h.createContext(null),
-  XU = ({
+  PC = h.createContext(null),
+  WU = ({
     children: e,
     onTestCaseClick: t,
     onVerdictClassify: n,
@@ -41050,19 +41045,19 @@ const OC = h.createContext(null),
       }),
       [t, n, a, s, o],
     );
-    return y.jsx(zC.Provider, { value: c, children: e });
+    return y.jsx(PC.Provider, { value: c, children: e });
   },
-  HC = h.createContext(null),
-  KU = () => {},
-  QU = ({ children: e, executions: t, currentExecutionId: n, onExecutionChange: a }) => {
+  zC = h.createContext(null),
+  XU = () => {},
+  KU = ({ children: e, executions: t, currentExecutionId: n, onExecutionChange: a }) => {
     const s = h.useMemo(
-      () => ({ executions: t ?? [], currentExecutionId: n ?? null, onExecutionChange: a ?? KU }),
+      () => ({ executions: t ?? [], currentExecutionId: n ?? null, onExecutionChange: a ?? XU }),
       [t, n, a],
     );
-    return y.jsx(HC.Provider, { value: s, children: e });
+    return y.jsx(zC.Provider, { value: s, children: e });
   },
-  UC = h.createContext(null),
-  JU = ({ children: e, basePath: t, onParamsChange: n }) => {
+  HC = h.createContext(null),
+  QU = ({ children: e, basePath: t, onParamsChange: n }) => {
     const { testId: a, attemptNumber: s, executionId: o } = SC(),
       c = h.useRef(void 0),
       d = h.useRef(void 0),
@@ -41099,14 +41094,19 @@ const OC = h.createContext(null),
           C(s ? parseInt(s, 10) : void 0),
           n?.({ executionId: f.current, testId: c.current, attemptNumber: d.current }));
       }, [o, a, s]),
-      y.jsx(UC.Provider, {
+      y.jsx(HC.Provider, {
         value: { basePath: t, goToIndex: v, goToExecution: g, goToTest: _, goToTestAttempt: x },
         children: e,
       })
     );
   },
+  UC = h.createContext(null),
+  JU = ({ children: e, quotaSlot: t }) => {
+    const n = h.useMemo(() => t ?? null, [t]);
+    return y.jsx(UC.Provider, { value: n, children: e });
+  },
   Wt = () => {
-    const e = h.useContext(PC);
+    const e = h.useContext(VC);
     if (!e) throw new Error('useDataProvider must be used within a DataProvider');
     return e;
   },
@@ -41282,7 +41282,7 @@ const OC = h.createContext(null),
   },
   wt = ({ children: e }) => y.jsx(y.Fragment, { children: e }),
   qC = () => {
-    const e = h.useContext(IC);
+    const e = h.useContext(DC);
     if (!e)
       throw new Error('useCapabilities/useFeatures must be used within a CapabilitiesProvider');
     return e;
@@ -41328,17 +41328,17 @@ const OC = h.createContext(null),
   Pd = ({ children: e, feature: t, capability: n }) =>
     XC(t, n) ? y.jsx(WC, { direction: 'vertical', children: e }) : null,
   Hf = () => {
-    const e = h.useContext(zC);
+    const e = h.useContext(PC);
     if (!e) throw new Error('useEventProvider must be used within an EventProvider');
     return e;
   },
   m$ = () => {
-    const e = h.useContext(HC);
+    const e = h.useContext(zC);
     if (!e) throw new Error('useExecutionProvider must be used within an ExecutionProvider');
     return e;
   },
   xg = () => {
-    const e = h.useContext(UC);
+    const e = h.useContext(HC);
     if (!e) throw new Error('useNavigationProvider must be used within a NavigationProvider');
     return e;
   },
@@ -41424,7 +41424,7 @@ const OC = h.createContext(null),
       }
     }
   },
-  _$ = () => h.useContext(DC),
+  _$ = () => h.useContext(UC),
   y8 = (e) =>
     e < 1e4
       ? e.toLocaleString()
@@ -43007,7 +43007,7 @@ const Ud = 'test-list',
         icon: y.jsx($i, { className: 'h-10 w-10', weight: 'thin' }),
         message: 'This test case has no content yet.',
       });
-    const a = VC(e.statements);
+    const a = jC(e.statements);
     return y.jsx('div', {
       className: 'flex h-full flex-1 flex-col overflow-auto bg-background p-2',
       children: y.jsx('div', {
@@ -43462,26 +43462,26 @@ const KB = (e) =>
         isAutopilotPending: e.isAutopilotPending,
       },
       s = { capabilities: e.capabilities, features: e.features };
-    return y.jsx(JU, {
+    return y.jsx(QU, {
       ...t,
-      children: y.jsx(YU, {
+      children: y.jsx(qU, {
         ...s,
         children: y.jsx($U, {
           authSlot: e.authSlot,
-          children: y.jsx(BU, {
+          children: y.jsx(JU, {
             quotaSlot: e.quotaSlot,
             children: y.jsx(UU, {
               analyzeSlot: e.analyzeSlot,
-              children: y.jsx(XU, {
+              children: y.jsx(WU, {
                 ...a,
-                children: y.jsx(QU, {
+                children: y.jsx(KU, {
                   executions: e.executions,
                   currentExecutionId: e.currentExecutionId,
                   onExecutionChange: e.onExecutionChange,
                   children: y.jsx(GB, {
                     features: e.features,
                     mode: e.mode,
-                    children: y.jsx(WU, {
+                    children: y.jsx(YU, {
                       ...n,
                       children: y.jsx(a$, {
                         children: y.jsx(i$, {
@@ -44064,4 +44064,4 @@ $3.createRoot(pA).render(
     }),
   }),
 );
-//# sourceMappingURL=index-Co2gTQQE.js.map
+//# sourceMappingURL=index-BG3-d6yW.js.map
