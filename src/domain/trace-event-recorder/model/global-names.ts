@@ -26,3 +26,12 @@ export const HEAL_THROW = '__heal_throw';
 // `undefined` when no preprocessors are configured, so the optional
 // call short-circuits to a no-op.
 export const HEAL_PREPROCESS = '__heal_preprocess';
+
+// Locator-screenshot helper invoked from Babel-injected lines placed
+// in front of every `await expect(...)` / `await expect.soft(...)`
+// the plugin sees. The fixture installs the global at test start; it
+// runs the same `captureWithHighlight` pipeline locator actions use
+// when the target duck-types as a Locator, and is a no-op otherwise.
+// Stays `undefined` outside any test, so the optional call in the
+// instrumented source short-circuits.
+export const HEAL_EXPECT_SCREENSHOT = '__heal_expect_screenshot';

@@ -13,8 +13,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 import {
   startLocatorScreenshotCapture,
-  wrapExpect,
+  expectScreenshotHelper,
 } from '../../../src/infrastructure/playwright-locator-screenshot-adapter';
+import { HEAL_EXPECT_SCREENSHOT } from '../../../src/domain/trace-event-recorder/model/global-names';
 
 const mockSetScreenshot = vi.fn<(filename: string) => void>();
 
@@ -389,16 +390,16 @@ describe('locator-screenshots', () => {
   });
 });
 
-// --- wrapExpect (locator-assertion screenshots) ---------------------------
+// --- expect-screenshot runtime helper -------------------------------------
 
-// Mirrors the locator-action tests: we drive a fake `expect` function
-// that returns a fake assertion object, and verify wrapExpect inserts
-// the boundingBox → overlay → screenshot → assertion → remove overlay
-// sequence. A fake Page/Locator are reused from the helper above so
+// Tests the runtime side of the expect-screenshot feature: the global
+// `__heal_expect_screenshot` function the Babel plugin's injected lines
+// resolve to. We reuse the fake Page from the locator-action tests so
 // capture session state and screenshot paths come from the same code
-// path as the locator-patch tests.
+// path. The helper is exposed both as a named export and via the
+// fixture-installed global slot — we test both shapes.
 
-function makeFakeLocatorInstance() {
+function makeFakeExpectLocator() {
   const log: CallLog[] = [];
   const screenshotPaths: string[] = [];
 
@@ -423,6 +424,16 @@ function makeFakeLocatorInstance() {
       log.push({ name: 'locator.boundingBox', args: [] });
       return { x: 10, y: 20, width: 100, height: 50 };
     },
+    async scrollIntoViewIfNeeded() {
+      log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
+    },
+    // The helper probes count() up-front to detect the
+    // "element absent" path. Default to 1 so the highlight pipeline
+    // runs; tests that want the no-match branch override this.
+    async count() {
+      log.push({ name: 'locator.count', args: [] });
+      return 1;
+    },
     page() {
       return fakePage;
     },
@@ -431,228 +442,180 @@ function makeFakeLocatorInstance() {
   return { fakePage, locator, log, screenshotPaths };
 }
 
-// Fake expect — takes a target and returns a fresh assertion object
-// with two `to*` methods and a `.not` getter that returns a sibling
-// assertion. `.not.toBeVisible()` exercises the recursive proxy path.
-function makeFakeExpect(assertionLog: CallLog[]) {
-  const buildAssertion = (negated: boolean) => {
-    const assertion: Record<string, unknown> = {
-      async toBeVisible(...args: unknown[]) {
-        assertionLog.push({ name: negated ? 'not.toBeVisible' : 'toBeVisible', args });
-        return 'ok';
-      },
-      async toHaveText(...args: unknown[]) {
-        assertionLog.push({ name: negated ? 'not.toHaveText' : 'toHaveText', args });
-        return 'ok';
-      },
-      describe: 'not-an-assertion-method',
-    };
-    Object.defineProperty(assertion, 'not', {
-      get() {
-        return buildAssertion(!negated);
-      },
-    });
-    return assertion;
-  };
-
-  const expectFn = Object.assign(
-    function fakeExpect(_target: unknown) {
-      return buildAssertion(false);
-    },
-    {
-      soft(_target: unknown) {
-        return buildAssertion(false);
-      },
-      poll: 'poll-placeholder',
-    },
-  );
-  return expectFn;
-}
-
-describe('wrapExpect — locator assertion screenshots', () => {
+describe('expectScreenshotHelper — expect-side capture pipeline', () => {
   beforeEach(() => {
     mockSetScreenshot.mockReset();
+    // Defensive: clear the global slot so a leaked install from a
+    // previous test doesn't bleed in.
+    delete (globalThis as Record<string, unknown>)[HEAL_EXPECT_SCREENSHOT];
   });
 
-  it('runs boundingBox → overlay → screenshot → assertion → remove overlay in order', async () => {
-    const { fakePage, locator, log, screenshotPaths } = makeFakeLocatorInstance();
+  it('runs count → scroll → idle-wait → measure → overlay → screenshot → remove for a locator', async () => {
+    const { fakePage, locator, log, screenshotPaths } = makeFakeExpectLocator();
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
-    const assertionLog: CallLog[] = [];
-    const wrapped = wrapExpect(
-      makeFakeExpect(assertionLog) as unknown as (...a: unknown[]) => unknown,
-    );
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    const result = await (assertion.toBeVisible as () => Promise<unknown>)();
+    await expectScreenshotHelper(locator);
 
-    expect(result).toBe('ok');
-    // The default fake locator has no `scrollIntoViewIfNeeded`, so
-    // the optional pre-screenshot scroll is skipped. The flow is
-    // wait-for-idle → measure → draw overlay → screenshot → remove
-    // overlay.
     expect(log.map((c) => c.name)).toEqual([
+      'locator.count', // up-front probe — present → continue with highlight path
+      'locator.scrollIntoViewIfNeeded',
       'page.evaluate', // wait for page idle
       'locator.boundingBox',
       'page.evaluate', // draw overlay
       'page.screenshot',
       'page.evaluate', // remove overlay
     ]);
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-assert-toBeVisible.png']);
-    expect(assertionLog.map((c) => c.name)).toEqual(['toBeVisible']);
+    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-expect.png']);
   });
 
   it('stamps the captured filename onto the active statement', async () => {
-    const { fakePage, locator } = makeFakeLocatorInstance();
+    const { fakePage, locator } = makeFakeExpectLocator();
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
-    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    await (assertion.toHaveText as (s: string) => Promise<unknown>)('hi');
+    await expectScreenshotHelper(locator);
 
     expect(mockSetScreenshot).toHaveBeenCalledTimes(1);
-    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-assert-toHaveText.png');
+    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-expect.png');
   });
 
-  it('wraps .not so `expect(loc).not.toBeVisible()` also screenshots', async () => {
-    const { fakePage, locator, screenshotPaths } = makeFakeLocatorInstance();
+  it('no-ops for non-Locator targets (plain values, strings, numbers, null)', async () => {
+    const { fakePage, screenshotPaths } = makeFakeExpectLocator();
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
-    const assertionLog: CallLog[] = [];
-    const wrapped = wrapExpect(
-      makeFakeExpect(assertionLog) as unknown as (...a: unknown[]) => unknown,
-    );
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    const not = assertion.not as Record<string, unknown>;
-    await (not.toBeVisible as () => Promise<unknown>)();
-
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-assert-toBeVisible.png']);
-    expect(assertionLog.map((c) => c.name)).toEqual(['not.toBeVisible']);
-    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-assert-toBeVisible.png');
-  });
-
-  it('removes the overlay even when the assertion throws', async () => {
-    const { fakePage, locator, log } = makeFakeLocatorInstance();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-
-    const throwingExpect = Object.assign(
-      function (_t: unknown) {
-        return {
-          async toBeVisible() {
-            throw new Error('boom');
-          },
-        };
-      },
-      { soft: () => ({}), poll: null },
-    );
-    const wrapped = wrapExpect(throwingExpect as unknown as (...a: unknown[]) => unknown);
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-
-    await expect((assertion.toBeVisible as () => Promise<unknown>)()).rejects.toThrow('boom');
-
-    // Three page.evaluate calls — wait-for-idle (before measure),
-    // draw overlay (before), and remove overlay (after). The remove
-    // must run even though the assertion threw in between.
-    const evaluates = log.filter((c) => c.name === 'page.evaluate');
-    expect(evaluates).toHaveLength(3);
-  });
-
-  it('leaves non-locator targets untouched', async () => {
-    const { fakePage, screenshotPaths } = makeFakeLocatorInstance();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-
-    const assertionLog: CallLog[] = [];
-    const wrapped = wrapExpect(
-      makeFakeExpect(assertionLog) as unknown as (...a: unknown[]) => unknown,
-    );
-    // A plain value — isLocator returns false, so the original
-    // assertion comes back unwrapped and no screenshot is taken.
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)('hello');
-    await (assertion.toBeVisible as () => Promise<unknown>)();
+    await expectScreenshotHelper('hello');
+    await expectScreenshotHelper(42);
+    await expectScreenshotHelper(null);
+    await expectScreenshotHelper(undefined);
+    await expectScreenshotHelper({ notALocator: true });
 
     expect(screenshotPaths).toEqual([]);
     expect(mockSetScreenshot).not.toHaveBeenCalled();
-    expect(assertionLog.map((c) => c.name)).toEqual(['toBeVisible']);
   });
 
-  it('copies static members (soft, poll) onto the wrapped expect', () => {
-    const assertionLog: CallLog[] = [];
-    const wrapped = wrapExpect(
-      makeFakeExpect(assertionLog) as unknown as (...a: unknown[]) => unknown,
+  it('no-ops when no capture session is active (helper invoked outside any test)', async () => {
+    // Drop any session leaked from a previous test in this file —
+    // the active-session registry is module-global, so we have to
+    // clear it explicitly to test the "no session" path.
+    const { setActiveCaptureSession } =
+      await import('../../../src/infrastructure/playwright-locator-screenshot-adapter/locator-patch');
+    setActiveCaptureSession(null);
+
+    const { locator, log } = makeFakeExpectLocator();
+    await expectScreenshotHelper(locator);
+    expect(log).toEqual([]);
+  });
+
+  it('installs and uninstalls the global slot via startLocatorScreenshotCapture', async () => {
+    const { fakePage, locator } = makeFakeExpectLocator();
+    const slot = () =>
+      (globalThis as Record<string, unknown>)[HEAL_EXPECT_SCREENSHOT] as
+        | ((target: unknown) => Promise<void>)
+        | undefined;
+
+    expect(slot()).toBeUndefined();
+
+    const stop = startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      1000,
     );
-    const w = wrapped as unknown as {
-      soft: (t: unknown) => Record<string, unknown>;
-      poll: string;
-    };
-    expect(typeof w.soft).toBe('function');
-    expect(w.poll).toBe('poll-placeholder');
+    expect(typeof slot()).toBe('function');
+
+    // Drive the helper through the installed global slot (mirrors
+    // what the Babel-injected `await globalThis.__heal_expect_screenshot?.(target)`
+    // does in instrumented source).
+    await slot()!(locator);
+    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-expect.png');
+
+    stop();
+    expect(slot()).toBeUndefined();
   });
 
-  it('screenshots assertions made via expect.soft(locator)', async () => {
-    const { fakePage, locator, screenshotPaths } = makeFakeLocatorInstance();
+  it('no-ops when the locator’s `page()` returns null (target detached / context closed)', async () => {
+    // Defensive path: a locator whose owning page can no longer be
+    // resolved. The helper must short-circuit before touching the
+    // session — no screenshot, no error.
+    const { fakePage, locator, log } = makeFakeExpectLocator();
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    // Replace the locator's `.page()` so it returns null.
+    locator.page = (() => null) as unknown as typeof locator.page;
+
+    await expectScreenshotHelper(locator);
+    expect(log).toEqual([]);
+    expect(mockSetScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('honors `{ scroll: false }` for viewport-sensitive matchers', async () => {
+    const { fakePage, locator, log } = makeFakeExpectLocator();
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
-    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
-    const soft = (wrapped as unknown as { soft: (t: unknown) => Record<string, unknown> }).soft;
-    const assertion = soft(locator);
-    await (assertion.toBeVisible as () => Promise<unknown>)();
-
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-assert-toBeVisible.png']);
-    expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-assert-toBeVisible.png');
-  });
-
-  it('scrolls the target into view before non-viewport-sensitive assertions', async () => {
-    // For non-viewport-sensitive assertions (`toBeVisible`,
-    // `toHaveText`, …) we DO scroll the target into view before
-    // the screenshot — same as locator actions. This makes the
-    // highlight visible regardless of where the element sits in
-    // the document.
-    const { fakePage, locator, log } = makeFakeLocatorInstance();
-    (locator as { scrollIntoViewIfNeeded?: () => Promise<void> }).scrollIntoViewIfNeeded =
-      async function () {
-        log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
-      };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-
-    const wrapped = wrapExpect(makeFakeExpect([]) as unknown as (...a: unknown[]) => unknown);
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    await (assertion.toBeVisible as () => Promise<unknown>)();
-
-    expect(log[0].name).toBe('locator.scrollIntoViewIfNeeded');
-  });
-
-  it('does NOT scroll the target before `expect(loc).toBeInViewport()`', async () => {
-    // `toBeInViewport()` is the one assertion whose outcome
-    // depends on viewport position — scrolling the target into
-    // view before running it would force every assertion to pass.
-    // The wrapper opts out of `scrollBeforeCapture` for this
-    // specific method.
-    const { fakePage, locator, log } = makeFakeLocatorInstance();
-    (locator as { scrollIntoViewIfNeeded?: () => Promise<void> }).scrollIntoViewIfNeeded =
-      async function () {
-        log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
-      };
-
-    // Add `toBeInViewport` to the fake expect so the wrapper sees
-    // it and applies the carve-out.
-    const fakeExpectWithToBeInViewport = Object.assign(
-      function (_t: unknown) {
-        return {
-          async toBeInViewport(...args: unknown[]) {
-            void args;
-            return 'ok';
-          },
-        };
-      },
-      { soft: () => ({}), poll: null },
-    );
-
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    const wrapped = wrapExpect(
-      fakeExpectWithToBeInViewport as unknown as (...a: unknown[]) => unknown,
-    );
-    const assertion = (wrapped as unknown as (t: unknown) => Record<string, unknown>)(locator);
-    await (assertion.toBeInViewport as () => Promise<unknown>)();
-
+    await expectScreenshotHelper(locator, { scroll: false });
     expect(log.some((c) => c.name === 'locator.scrollIntoViewIfNeeded')).toBe(false);
+    // The screenshot still gets taken (and stamped) — only the scroll
+    // is skipped.
+    expect(log.some((c) => c.name === 'page.screenshot')).toBe(true);
+    expect(mockSetScreenshot).toHaveBeenCalledTimes(1);
+  });
+
+  describe('no-match fallback (count() === 0)', () => {
+    it('takes a plain viewport screenshot — no boundingBox, no overlay, no scroll', async () => {
+      // Assertion like `toHaveCount(0)` / `toBeHidden()`: the locator
+      // matches zero elements. The helper must NOT call boundingBox or
+      // scrollIntoView (both auto-wait the full `screenshotTimeoutMs`
+      // for an element that will never appear). It still produces a
+      // file so the trace shows the page state at the assertion.
+      const { fakePage, locator, log, screenshotPaths } = makeFakeExpectLocator();
+      locator.count = async () => {
+        log.push({ name: 'locator.count', args: [] });
+        return 0;
+      };
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      // Only count() and a bare page.screenshot — no scroll, no
+      // boundingBox, no overlay evaluates.
+      expect(log.map((c) => c.name)).toEqual(['locator.count', 'page.screenshot']);
+      expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-expect.png']);
+      expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-expect.png');
+    });
+
+    it('falls back to the highlight path when count() throws (defensive)', async () => {
+      const { fakePage, locator, log } = makeFakeExpectLocator();
+      locator.count = async () => {
+        throw new Error('count rejected');
+      };
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      // Count probe failed → treat as "present" and run the full
+      // highlight pipeline. The boundingBox call confirms we did NOT
+      // take the no-match shortcut.
+      expect(log.some((c) => c.name === 'locator.boundingBox')).toBe(true);
+    });
+
+    it('falls back to the highlight path when count() is missing entirely', async () => {
+      const { fakePage, locator, log } = makeFakeExpectLocator();
+      delete (locator as { count?: unknown }).count;
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      expect(log.some((c) => c.name === 'locator.boundingBox')).toBe(true);
+    });
+  });
+
+  it('swallows capture errors so a failing screenshot never breaks the assertion', async () => {
+    const { fakePage, locator } = makeFakeExpectLocator();
+    // Force `page.screenshot` to reject so capture fails after the
+    // overlay has been drawn. The helper should still resolve.
+    fakePage.screenshot = async () => {
+      throw new Error('screenshot exploded');
+    };
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+    await expect(expectScreenshotHelper(locator)).resolves.toBeUndefined();
   });
 });

@@ -56,15 +56,33 @@ export function runScenarioAssertions(
       expect(clickWithScreenshot).toBeDefined();
       expect(clickWithScreenshot?.source).toMatch(/click/);
 
-      // Locator assertions (expect(locator).toBeVisible() /
-      // .toHaveText(...)) should also stamp a highlight screenshot on
-      // their statement, tagged `assert-<method>`.
-      const assertWithScreenshot = findStatement(
+      // Locator assertions (`expect(locator).toBeVisible()` /
+      // `.toHaveText(...)`) get their highlight screenshot via a
+      // dedicated `__heal_expect_screenshot(...)` line the Babel
+      // plugin injects in front of every assertion — that line is
+      // what carries the `screenshot` field, tagged `expect`. The
+      // user-visible `await expect(...).<matcher>()` statement still
+      // appears in the trace but without a screenshot field of its
+      // own.
+      const expectScreenshotStmt = findStatement(
         trace,
-        (s) => !!s.screenshot && /highlight-\d+-assert-\w+\.png$/.test(s.screenshot),
+        (s) => !!s.screenshot && /highlight-\d+-expect\.png$/.test(s.screenshot),
       );
-      expect(assertWithScreenshot).toBeDefined();
-      expect(assertWithScreenshot?.source).toMatch(/expect\(/);
+      expect(expectScreenshotStmt).toBeDefined();
+      expect(expectScreenshotStmt?.source).toMatch(/__heal_expect_screenshot\(/);
+
+      // Companion check — the user-written `await expect(...).<matcher>()`
+      // statement is also in the trace but must NOT carry its own
+      // screenshot field in visible mode. (In hidden mode the
+      // screenshot would land on this line instead; the default is
+      // visible.)
+      const userExpectStmt = findStatement(
+        trace,
+        (s) =>
+          /^await expect\(.+\)\.\w+/.test(s.source) && !/__heal_expect_screenshot/.test(s.source),
+      );
+      expect(userExpectStmt).toBeDefined();
+      expect(userExpectStmt?.screenshot ?? null).toBeNull();
     });
 
     it('2. failing assertion — test.status=failed and a statement with status=threw', () => {
