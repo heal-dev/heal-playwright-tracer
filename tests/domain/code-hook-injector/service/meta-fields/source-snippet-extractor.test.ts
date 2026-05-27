@@ -31,4 +31,38 @@ describe('extractSource', () => {
     expect(extractSource('abc', { start: null, end: null })).toBe('');
     expect(extractSource('abc', null as any)).toBe('');
   });
+
+  describe('_healSyntheticSource override', () => {
+    // Synthetic nodes injected by the Babel plugin (the
+    // `__heal_expect_screenshot` helper line in front of every
+    // `await expect(...)`) carry their source string as a property
+    // because they have no position in the user's file to slice.
+    it('returns the synthetic source verbatim when set, ignoring code/start/end', () => {
+      const snippet = extractSource('unrelated file content', {
+        start: 0,
+        end: 5,
+        _healSyntheticSource: 'await __heal_expect_screenshot(loc)',
+      });
+      expect(snippet).toBe('await __heal_expect_screenshot(loc)');
+    });
+
+    it('collapses whitespace and trims the synthetic source like a normal slice', () => {
+      const snippet = extractSource(null, {
+        _healSyntheticSource: '  await __heal_expect_screenshot(\n  loc\n)  ',
+      });
+      expect(snippet).toBe('await __heal_expect_screenshot( loc )');
+    });
+
+    it('truncates a long synthetic source with an ellipsis past maxLen', () => {
+      const snippet = extractSource(null, { _healSyntheticSource: 'x'.repeat(300) }, 50);
+      expect(snippet).toHaveLength(50);
+      expect(snippet.endsWith('…')).toBe(true);
+    });
+
+    it('still returns empty string when synthetic source is absent AND offsets are missing', () => {
+      // No code, no offsets, no synthetic source → empty (regression
+      // guard for the order of fallback checks).
+      expect(extractSource(null, {})).toBe('');
+    });
+  });
 });

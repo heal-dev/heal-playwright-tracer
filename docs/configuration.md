@@ -371,6 +371,73 @@ lines all work; `@heal-tracer-ignored` does not. Only leading comments count
 A whole file is better excluded via the plugin's `include` option
 than by annotating every statement.
 
+## Expect-screenshot injection
+
+Every `await expect(locator).<matcher>()` and
+`await expect.soft(locator).<matcher>()` in an instrumented file gets a
+highlight screenshot, the same way locator actions do. You don't need
+to import `expect` from anywhere specific — the Babel plugin rewrites
+each assertion in place, so:
+
+```ts
+import { expect } from '@playwright/test'; // ← still fine
+```
+
+works identically to importing from `@heal-dev/heal-playwright-tracer`.
+
+By default the injected screenshot call appears as its own statement
+in the trace:
+
+```jsonc
+// heal-traces.ndjson — abridged
+{ "kind": "statement", "source": "await __heal_expect_screenshot(heading)",
+  "screenshot": "highlight-3-expect.png", … },
+{ "kind": "statement", "source": "await expect(heading).toBeVisible();", … }
+```
+
+Hide it by passing `hideExpectScreenshots: true` to the plugin —
+the screenshot capture is folded into the assertion's own statement
+instead, so the trace shows the user-written `expect(...)` line
+carrying the screenshot field directly:
+
+```ts
+// playwright.config.ts
+export default defineConfig({
+  '@playwright/test': {
+    babelPlugins: [
+      [
+        require.resolve('@heal-dev/heal-playwright-tracer/code-hook-injector'),
+        { include: [/\/tests\//], hideExpectScreenshots: true },
+      ],
+    ],
+  },
+} as any);
+```
+
+Either way, the helper is a no-op when the `expect` target isn't a
+Locator — `expect(value).toBe(2)`, `expect(page).toHaveURL(...)`,
+`expect.poll(() => x).toBe(...)` are all untouched. Capture is
+best-effort: a screenshot that fails (page closed, CDP wedged) never
+breaks the assertion.
+
+**Edge case — `toBeInViewport`.** The plugin recognises
+`toBeInViewport` and `not.toBeInViewport` and emits a `{ scroll: false }`
+hint so the helper doesn't scroll the target into view before
+capturing — scrolling first would mask exactly the condition the user
+is asserting. Every other matcher gets the default scroll-into-view.
+
+**Opt out per-statement.** Annotate a single assertion with the
+`// @heal-tracer-ignore` directive to skip injection (and the rest of
+the trace hook) for that line:
+
+```ts
+// @heal-tracer-ignore
+await expect(weirdLocator).toBeVisible();
+```
+
+See [Ignoring code](#ignoring-code-heal-tracer-ignore) for the full
+matching rules.
+
 ## Pre-processors
 
 A `StatementPreProcessor` is an async function the tracer awaits
