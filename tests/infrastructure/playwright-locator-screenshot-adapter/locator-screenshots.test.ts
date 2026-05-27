@@ -427,6 +427,13 @@ function makeFakeExpectLocator() {
     async scrollIntoViewIfNeeded() {
       log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
     },
+    // The helper probes count() up-front to detect the
+    // "element absent" path. Default to 1 so the highlight pipeline
+    // runs; tests that want the no-match branch override this.
+    async count() {
+      log.push({ name: 'locator.count', args: [] });
+      return 1;
+    },
     page() {
       return fakePage;
     },
@@ -443,13 +450,14 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     delete (globalThis as Record<string, unknown>)[HEAL_EXPECT_SCREENSHOT];
   });
 
-  it('runs scroll → idle-wait → measure → overlay → screenshot → remove for a locator', async () => {
+  it('runs count → scroll → idle-wait → measure → overlay → screenshot → remove for a locator', async () => {
     const { fakePage, locator, log, screenshotPaths } = makeFakeExpectLocator();
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
     await expectScreenshotHelper(locator);
 
     expect(log.map((c) => c.name)).toEqual([
+      'locator.count', // up-front probe — present → continue with highlight path
       'locator.scrollIntoViewIfNeeded',
       'page.evaluate', // wait for page idle
       'locator.boundingBox',
@@ -548,6 +556,55 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     // is skipped.
     expect(log.some((c) => c.name === 'page.screenshot')).toBe(true);
     expect(mockSetScreenshot).toHaveBeenCalledTimes(1);
+  });
+
+  describe('no-match fallback (count() === 0)', () => {
+    it('takes a plain viewport screenshot — no boundingBox, no overlay, no scroll', async () => {
+      // Assertion like `toHaveCount(0)` / `toBeHidden()`: the locator
+      // matches zero elements. The helper must NOT call boundingBox or
+      // scrollIntoView (both auto-wait the full `screenshotTimeoutMs`
+      // for an element that will never appear). It still produces a
+      // file so the trace shows the page state at the assertion.
+      const { fakePage, locator, log, screenshotPaths } = makeFakeExpectLocator();
+      locator.count = async () => {
+        log.push({ name: 'locator.count', args: [] });
+        return 0;
+      };
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      // Only count() and a bare page.screenshot — no scroll, no
+      // boundingBox, no overlay evaluates.
+      expect(log.map((c) => c.name)).toEqual(['locator.count', 'page.screenshot']);
+      expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-expect.png']);
+      expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-expect.png');
+    });
+
+    it('falls back to the highlight path when count() throws (defensive)', async () => {
+      const { fakePage, locator, log } = makeFakeExpectLocator();
+      locator.count = async () => {
+        throw new Error('count rejected');
+      };
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      // Count probe failed → treat as "present" and run the full
+      // highlight pipeline. The boundingBox call confirms we did NOT
+      // take the no-match shortcut.
+      expect(log.some((c) => c.name === 'locator.boundingBox')).toBe(true);
+    });
+
+    it('falls back to the highlight path when count() is missing entirely', async () => {
+      const { fakePage, locator, log } = makeFakeExpectLocator();
+      delete (locator as { count?: unknown }).count;
+      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+
+      await expectScreenshotHelper(locator);
+
+      expect(log.some((c) => c.name === 'locator.boundingBox')).toBe(true);
+    });
   });
 
   it('swallows capture errors so a failing screenshot never breaks the assertion', async () => {

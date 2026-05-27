@@ -45,6 +45,24 @@ function isLocator(target: unknown): target is Locator {
   return typeof obj.boundingBox === 'function' && typeof obj.page === 'function';
 }
 
+// Resolve the locator's current match count without auto-waiting.
+// `locator.count()` returns synchronously-ish (a single CDP roundtrip)
+// and never blocks waiting for the element to appear, so it's safe to
+// call up-front to distinguish "element present, capture with overlay"
+// from "element absent, fall back to plain viewport screenshot".
+// Returns -1 on probe failure (`count` missing, throws) so the caller
+// treats it like "present" and proceeds with the normal pipeline.
+async function probeLocatorCount(target: Locator): Promise<number> {
+  const counter = (target as { count?: () => Promise<number> }).count;
+  if (typeof counter !== 'function') return -1;
+  try {
+    return await counter.call(target);
+  } catch (err) {
+    log.warn('expectScreenshotHelper count() probe rejected', err);
+    return -1;
+  }
+}
+
 export interface ExpectScreenshotOptions {
   /**
    * Whether to scroll the target into view before capturing. Defaults
@@ -64,6 +82,24 @@ export async function expectScreenshotHelper(
   if (!session) return;
   const page = typeof target.page === 'function' ? (target.page() as Page | null) : null;
   if (!page) return;
+
+  // Probe match count first. The user may be asserting that an element
+  // is absent (`toHaveCount(0)`, `toBeHidden()`, `.not.toBeVisible()`)
+  // — in that case `scrollIntoViewIfNeeded` and `boundingBox` would
+  // each auto-wait the full `screenshotTimeoutMs` for an element that
+  // is never going to appear (two ten-second stalls per assertion).
+  // `count()` returns immediately, so we fork the pipeline up-front
+  // and fall back to a plain viewport screenshot when there's nothing
+  // to frame.
+  const count = await probeLocatorCount(target);
+  if (count === 0) {
+    try {
+      await session.captureViewportOnly(page, 'expect');
+    } catch (err) {
+      log.warn('expectScreenshotHelper captureViewportOnly rejected', err);
+    }
+    return;
+  }
 
   const scrollBeforeCapture = options?.scroll !== false;
 
