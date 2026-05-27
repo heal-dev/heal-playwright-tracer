@@ -31,7 +31,7 @@ const bundleDest = path.join(tracerRoot, 'tracer-viewer-bundle');
 
 // Source of truth for the wire types the standalone vendors verbatim.
 const VENDOR_SOURCE_REL = 'src/infrastructure/local-viewer-adapter/analyze-wire-types.ts';
-const VENDOR_DEST_REL = 'src/vendor/heal-tracer-api-types.ts';
+const VENDOR_DEST_REL = 'src/generated/heal-tracer-api-types.ts';
 const vendorSource = path.join(tracerRoot, VENDOR_SOURCE_REL);
 const vendorDest = path.join(standalonePkg, VENDOR_DEST_REL);
 
