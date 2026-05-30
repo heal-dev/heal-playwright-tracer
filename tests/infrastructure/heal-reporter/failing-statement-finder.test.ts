@@ -264,26 +264,6 @@ describe('FailingStatementFinder', () => {
     expect(found?.error.isPlaywrightError).toBe(true);
   });
 
-  it('returns null when every threw is caught (parent ok)', () => {
-    const p = writeNdjson([
-      {
-        kind: 'statement',
-        statement: leafStmt({
-          index: 0,
-          status: 'ok',
-          children: [
-            leafStmt({
-              index: 1,
-              status: 'threw',
-              error: { message: 'swallowed' },
-            }),
-          ],
-        }),
-      },
-    ]);
-    expect(finder.find(p)).toBeNull();
-  });
-
   it('try/catch at top level: child threw inside a parent that returned ok → caught', () => {
     // Models the textbook pattern:
     //   try { await page.click('nope'); } catch {}  // (in test body)
