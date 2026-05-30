@@ -69,8 +69,7 @@ function findDeepestUncaughtThrew(
   ancestorChainAllThrew: boolean,
 ): { stmt: Statement; depth: number } | null {
   const propagated = stmt.status === 'threw' && ancestorChainAllThrew;
-  let best: { stmt: Statement; depth: number } | null =
-    propagated ? { stmt, depth } : null;
+  let best: { stmt: Statement; depth: number } | null = propagated ? { stmt, depth } : null;
 
   const childChainAllThrew = ancestorChainAllThrew && stmt.status === 'threw';
   for (const child of stmt.children) {

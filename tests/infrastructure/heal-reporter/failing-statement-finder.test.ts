@@ -306,7 +306,7 @@ describe('FailingStatementFinder', () => {
             leafStmt({
               index: 1,
               status: 'ok',
-              source: "const btn = page.locator('button:has-text(\"Close\")')",
+              source: 'const btn = page.locator(\'button:has-text("Close")\')',
             }),
             leafStmt({
               index: 2,
@@ -351,9 +351,7 @@ describe('FailingStatementFinder', () => {
     ]);
     const found = finder.find(p);
     expect(found?.statement.index).toBe(1);
-    expect(found?.statement.source).toBe(
-      "await expect(page.getByRole('heading')).toBeVisible()",
-    );
+    expect(found?.statement.source).toBe("await expect(page.getByRole('heading')).toBeVisible()");
   });
 
   it('2 nesting levels: function1 → function2 → leaf that fails, all propagate → pick the leaf', () => {
