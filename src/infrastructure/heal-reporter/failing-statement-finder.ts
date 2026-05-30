@@ -5,20 +5,12 @@
  */
 
 // Locates the statement responsible for a test failure inside one
-// `heal-traces.ndjson`. Used by `HealTracerReporter.onTestEnd` to
-// surface a compact `FailingStatement` + `StatementError` on each
-// attempt of the `execution.json` manifest.
+// `heal-traces.ndjson`, used by `HealTracerReporter.onTestEnd`.
 //
-// "Failing statement" = the deepest node in any root `statement`
-// record's children tree whose `status === 'threw'`. Going deepest
-// rather than first-seen surfaces the actual leaf call that threw
-// (e.g. `page.locator(...).click()`) instead of the enclosing user
-// step that propagated the error up.
-//
-// Returns null when the file is missing/torn, no statement threw,
-// or the statement that threw has no error attached (defensive — the
-// schema requires `error` on `status === 'threw'` but we tolerate
-// older traces).
+// Walk root statements in file order; return the deepest `threw`
+// inside the FIRST root that has an uncaught throw (a `threw` whose
+// ancestor chain is all `threw` — i.e. not swallowed by a try/catch).
+// First-root semantics: body throw beats afterEach collateral throw.
 
 import * as fs from 'fs';
 
@@ -42,7 +34,6 @@ export class FailingStatementFinder {
       return null;
     }
 
-    let deepest: { stmt: Statement; depth: number } | null = null;
     for (const line of body.split('\n')) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -50,35 +41,40 @@ export class FailingStatementFinder {
       try {
         parsed = JSON.parse(trimmed) as { kind?: unknown; statement?: Statement };
       } catch {
-        // Torn-write tolerance: skip unparseable lines. Mirrors the
-        // discipline of `NdjsonTailInspector`.
+        // Tolerate torn last line (mirrors `NdjsonTailInspector`).
         continue;
       }
       if (parsed?.kind !== 'statement' || !parsed.statement) continue;
 
-      const found = findDeepestThrew(parsed.statement, 0);
-      if (found && (!deepest || found.depth > deepest.depth)) {
-        deepest = found;
+      // Roots have no parent → seed `ancestorChainAllThrew=true`.
+      const found = findDeepestUncaughtThrew(parsed.statement, 0, true);
+      if (found && found.stmt.error) {
+        return {
+          statement: project(found.stmt),
+          error: found.stmt.error,
+        };
       }
     }
 
-    if (!deepest || !deepest.stmt.error) return null;
-
-    return {
-      statement: project(deepest.stmt),
-      error: deepest.stmt.error,
-    };
+    return null;
   }
 }
 
-function findDeepestThrew(
+// Deepest `threw` whose ancestor chain is all `threw`. Children
+// inherit the all-threw chain only if we ourselves threw; if we
+// returned `ok` despite a child throwing, the catch sits in us.
+function findDeepestUncaughtThrew(
   stmt: Statement,
   depth: number,
+  ancestorChainAllThrew: boolean,
 ): { stmt: Statement; depth: number } | null {
+  const propagated = stmt.status === 'threw' && ancestorChainAllThrew;
   let best: { stmt: Statement; depth: number } | null =
-    stmt.status === 'threw' ? { stmt, depth } : null;
+    propagated ? { stmt, depth } : null;
+
+  const childChainAllThrew = ancestorChainAllThrew && stmt.status === 'threw';
   for (const child of stmt.children) {
-    const found = findDeepestThrew(child, depth + 1);
+    const found = findDeepestUncaughtThrew(child, depth + 1, childChainAllThrew);
     if (found && (!best || found.depth > best.depth)) {
       best = found;
     }
