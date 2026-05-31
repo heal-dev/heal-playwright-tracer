@@ -7,10 +7,25 @@
 // Locates the statement responsible for a test failure inside one
 // `heal-traces.ndjson`, used by `HealTracerReporter.onTestEnd`.
 //
-// Walk root statements in file order; return the deepest `threw`
-// inside the FIRST root that has an uncaught throw (a `threw` whose
-// ancestor chain is all `threw` — i.e. not swallowed by a try/catch).
-// First-root semantics: body throw beats afterEach collateral throw.
+// Group root statements by `scope` (test body / beforeEach / afterEach /
+// …). Walk groups in encounter order. The first group whose LAST root
+// is `threw` is where the test crashed — within that root, drill to the
+// deepest `threw` whose ancestor chain is also `threw` (handles helper
+// internal try/catch).
+//
+// Why "last in scope": when source has `try { await x(); } catch {}`,
+// the tracer still records `await x()` as `threw` (the throw was
+// emitted before JS routed to the catch), but execution continues and
+// the next root statement runs (`ok`). So a caught-by-source throw
+// always has a following root in the same scope; a real failure halts
+// execution and is the last thing in its scope. Body-vs-afterEach:
+// body crash halts the body scope group; afterEach runs in its own
+// group — first crashing group wins, so body beats afterEach collateral.
+//
+// Limitation: a test scope ending in a source-level `try{}catch{}`
+// with no following code can't be distinguished from a real crash on
+// trace alone. Long-term fix is AST-tagging statements lexically
+// inside try/catch at trace ingest. Rare in practice.
 
 import * as fs from 'fs';
 
@@ -34,6 +49,7 @@ export class FailingStatementFinder {
       return null;
     }
 
+    const roots: Statement[] = [];
     for (const line of body.split('\n')) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -45,15 +61,30 @@ export class FailingStatementFinder {
         continue;
       }
       if (parsed?.kind !== 'statement' || !parsed.statement) continue;
+      roots.push(parsed.statement);
+    }
 
-      // Roots have no parent → seed `ancestorChainAllThrew=true`.
-      const found = findDeepestUncaughtThrew(parsed.statement, 0, true);
-      if (found && found.stmt.error) {
-        return {
-          statement: project(found.stmt),
-          error: found.stmt.error,
-        };
+    // Walk consecutive same-scope groups. First group whose last root
+    // is `threw` is the crashing scope.
+    let groupStart = 0;
+    while (groupStart < roots.length) {
+      const groupScope = roots[groupStart].scope;
+      let groupEnd = groupStart + 1;
+      while (groupEnd < roots.length && roots[groupEnd].scope === groupScope) {
+        groupEnd++;
       }
+      const lastInGroup = roots[groupEnd - 1];
+      if (lastInGroup.status === 'threw') {
+        // Roots have no parent → seed `ancestorChainAllThrew=true`.
+        const found = findDeepestUncaughtThrew(lastInGroup, 0, true);
+        if (found && found.stmt.error) {
+          return {
+            statement: project(found.stmt),
+            error: found.stmt.error,
+          };
+        }
+      }
+      groupStart = groupEnd;
     }
 
     return null;
