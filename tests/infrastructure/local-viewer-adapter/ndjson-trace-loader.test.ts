@@ -106,6 +106,36 @@ describe('loadTrace', () => {
     const trace = await loadTrace(file);
     expect(trace.statements).toHaveLength(1);
   });
+
+  it('parses a test-source record into trace.source', async () => {
+    const file = await writeNdjson([
+      HEADER,
+      STMT(1),
+      {
+        kind: 'test-source',
+        files: [
+          { path: 'sources/tests/a.spec.ts', bytes: 100, entry: true },
+          { path: 'sources/pages/login.ts', bytes: 250 },
+          { path: 'sources/pages/huge.ts', bytes: 999999, truncated: true },
+        ],
+      },
+      RESULT,
+    ]);
+    const trace = await loadTrace(file);
+    expect(trace.source).toHaveLength(3);
+    expect(trace.source[0]).toMatchObject({
+      path: 'sources/tests/a.spec.ts',
+      bytes: 100,
+      entry: true,
+    });
+    expect(trace.source[2]).toMatchObject({ truncated: true });
+  });
+
+  it('defaults trace.source to an empty array when no test-source record is present', async () => {
+    const file = await writeNdjson([HEADER, STMT(1), RESULT]);
+    const trace = await loadTrace(file);
+    expect(trace.source).toEqual([]);
+  });
 });
 
 describe('rewriteScreenshots', () => {

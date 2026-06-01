@@ -11,6 +11,7 @@
 //   <rootDir>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/trace.zip
 //   <rootDir>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/screenshots/<file>
 //   <rootDir>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/videos/<file>
+//   <rootDir>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/sources/<file>
 //
 // Pure path joins — no I/O, no fs.existsSync, no validation beyond
 // traversal-safety on user-supplied relative paths.
@@ -27,6 +28,7 @@ export class HealTracesLayout {
   static readonly TRACE_FILENAME = 'trace.zip';
   static readonly SCREENSHOTS_SUBDIR = 'screenshots';
   static readonly VIDEOS_SUBDIR = 'videos';
+  static readonly SOURCES_SUBDIR = 'sources';
   static readonly EXECUTIONS_NDJSON = 'executions.ndjson';
   static readonly EXECUTION_MANIFEST = 'execution.json';
   static readonly ANALYZE_NDJSON_FILENAME = ANALYZE_NDJSON_FILENAME;
@@ -91,6 +93,27 @@ export class HealTracesLayout {
       HealTracesLayout.VIDEOS_SUBDIR,
       path.basename(filename),
     );
+  }
+
+  /** Per-test `sources/` directory — content for `test-source` manifests. */
+  sourcesDir(playwrightTestId: string, attempt: number): string {
+    return path.join(this.testDir(playwrightTestId, attempt), HealTracesLayout.SOURCES_SUBDIR);
+  }
+
+  /**
+   * Resolve a free-form relative path under the per-test `sources/`
+   * directory, preserving subdirectories (we mirror the project's own
+   * source layout under `sources/`). Throws on traversal — same guard
+   * shape as `attachmentPath()`.
+   */
+  sourcePath(playwrightTestId: string, attempt: number, relPath: string): string {
+    const root = this.sourcesDir(playwrightTestId, attempt);
+    const resolved = path.resolve(root, relPath);
+    const rootResolved = path.resolve(root);
+    if (resolved !== rootResolved && !resolved.startsWith(rootResolved + path.sep)) {
+      throw new Error(`source path escapes sources directory: ${relPath}`);
+    }
+    return resolved;
   }
 
   /**

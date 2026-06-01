@@ -71,6 +71,30 @@ describe('HealTracesLayout', () => {
     );
   });
 
+  it('sourcesDir nests under the per-attempt root', () => {
+    expect(layout().sourcesDir(TID, ATTEMPT)).toBe(
+      path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'sources'),
+    );
+  });
+
+  it('sourcePath resolves nested relative paths under sources/', () => {
+    expect(layout().sourcePath(TID, ATTEMPT, 'pages/login.ts')).toBe(
+      path.resolve(path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'sources', 'pages', 'login.ts')),
+    );
+  });
+
+  it('sourcePath rejects path traversal attempts', () => {
+    expect(() => layout().sourcePath(TID, ATTEMPT, '../../../etc/passwd')).toThrow(
+      /escapes sources directory/,
+    );
+  });
+
+  it('sourcePath accepts the sources/ root itself', () => {
+    expect(layout().sourcePath(TID, ATTEMPT, '.')).toBe(
+      path.resolve(path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'sources')),
+    );
+  });
+
   it('attachmentPath resolves nested relative paths under the per-attempt dir', () => {
     expect(layout().attachmentPath(TID, ATTEMPT, 'pages/page-1/video.webm')).toBe(
       path.resolve(path.join(ROOT, 'heal-traces', EXEC, TID, '1', 'pages', 'page-1', 'video.webm')),

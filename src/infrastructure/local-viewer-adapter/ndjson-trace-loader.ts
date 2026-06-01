@@ -18,6 +18,8 @@ import type {
   TestAttachmentsRecord,
   TestHeader,
   TestResultRecord,
+  TestSourceFile,
+  TestSourceRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 
 export interface TraceModel {
@@ -31,6 +33,14 @@ export interface TraceModel {
    * error.
    */
   attachments: TestAttachment[];
+  /**
+   * Source-file manifest captured by the fixture when
+   * `configureTracer({ source: { enabled: true } })` opts in. Empty
+   * otherwise. Each entry's `path` is relative to the per-test
+   * directory; the file's content lives at `<testDir>/<path>` (under
+   * `sources/`) and is served by the viewer via the source endpoint.
+   */
+  source: TestSourceFile[];
 }
 
 interface RawHeaderRecord {
@@ -47,6 +57,7 @@ type AnyRecord =
   | RawStatementRecord
   | TestResultRecord
   | TestAttachmentsRecord
+  | TestSourceRecord
   | { kind: string };
 
 const parseLine = (line: string, lineNumber: number): AnyRecord | null => {
@@ -67,6 +78,7 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
   const statements: Statement[] = [];
   let result: TestResultRecord | undefined;
   let attachments: TestAttachment[] = [];
+  let source: TestSourceFile[] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
@@ -90,6 +102,9 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
       case 'test-attachments':
         attachments = (record as TestAttachmentsRecord).attachments;
         break;
+      case 'test-source':
+        source = (record as TestSourceRecord).files;
+        break;
       default:
         // Forward-compatible: unknown kinds are dropped silently.
         break;
@@ -100,7 +115,7 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
     throw new Error(`No test-header record found in ${ndjsonPath}`);
   }
 
-  return { header, statements, attachments, ...(result ? { result } : {}) };
+  return { header, statements, attachments, source, ...(result ? { result } : {}) };
 };
 
 /**
