@@ -5,29 +5,33 @@
  */
 
 // Feature: locator-screenshots — highlight + screenshot capture on
-// every Playwright locator action.
+// every Playwright locator action and on every `expect(locator).…`
+// / `expect.soft(locator).…` assertion the Babel plugin instruments.
 //
 // Public API:
 //   startLocatorScreenshotCapture(samplePage, outputDir, onScreenshotWritten, screenshotTimeoutMs)
 //     Ensures the process-wide Locator.prototype patch is installed,
-//     creates a per-test capture session, and registers it so the
-//     patched methods can find it. `screenshotTimeoutMs` caps every
-//     async the capture pipeline awaits — locator resolution, CDP
-//     sends, page.evaluate, page.screenshot. Returns a disposer
-//     that clears the active session at test teardown.
-//
-//   wrapExpect(expect) — wraps Playwright's `expect` so locator
-//     assertions also trigger a highlight screenshot.
+//     creates a per-test capture session, registers it so both the
+//     patched action methods and the global `__heal_expect_screenshot`
+//     helper can find it, and installs that helper on `globalThis`.
+//     `screenshotTimeoutMs` caps every async the capture pipeline
+//     awaits — locator resolution, CDP sends, page.evaluate,
+//     page.screenshot. Returns a disposer that clears the active
+//     session and uninstalls the helper at test teardown.
 //
 // Class / helper locations:
-//   - ScreenshotCaptureSession.ts — per-test capture pipeline
-//   - locator-patch.ts            — process-global prototype patch + active-session registry
-//   - assertion-wrapper.ts        — `wrapExpect` for locator assertions
-//   - overlay-helpers.ts          — stateless drawOverlay / removeOverlay
+//   - ScreenshotCaptureSession.ts        — per-test capture pipeline
+//   - locator-patch.ts                   — process-global prototype patch + active-session registry
+//   - expect-screenshot-runtime.ts       — runtime helper for the Babel-injected `expect` screenshot calls
+//   - overlay-helpers.ts                 — stateless drawOverlay / removeOverlay
 
 import type { Page } from 'playwright';
 import { ensureLocatorPrototypePatched, setActiveCaptureSession } from './locator-patch';
 import { ScreenshotCaptureSession } from './screenshot-capture-session';
+import {
+  installExpectScreenshotGlobal,
+  uninstallExpectScreenshotGlobal,
+} from './expect-screenshot-runtime';
 
 export function startLocatorScreenshotCapture(
   samplePage: Page,
@@ -38,8 +42,12 @@ export function startLocatorScreenshotCapture(
   ensureLocatorPrototypePatched(samplePage);
   const session = new ScreenshotCaptureSession(outputDir, onScreenshotWritten, screenshotTimeoutMs);
   setActiveCaptureSession(session);
-  return () => setActiveCaptureSession(null);
+  installExpectScreenshotGlobal();
+  return () => {
+    uninstallExpectScreenshotGlobal();
+    setActiveCaptureSession(null);
+  };
 }
 
-export { wrapExpect } from './assertion-wrapper';
 export { ScreenshotCaptureSession } from './screenshot-capture-session';
+export { expectScreenshotHelper } from './expect-screenshot-runtime';

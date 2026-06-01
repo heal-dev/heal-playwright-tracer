@@ -224,4 +224,164 @@ describe('transform', () => {
       expect(matches).toHaveLength(2);
     });
   });
+
+  describe('expect-screenshot injection', () => {
+    it('inserts the helper line in front of `await expect(ident).toBeVisible()`', () => {
+      const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`);
+      // The helper call appears verbatim (no `?.()` optional chain
+      // because that lives at the production-time call site, not in
+      // the source — it does in fact, see below).
+      expect(out).toContain('await globalThis.__heal_expect_screenshot?.(heading)');
+      // And the `__enter` block carrying the synthetic source must
+      // be emitted before the assertion's `__enter` block. Two ways
+      // to verify: (1) the helper's source string is present, (2) it
+      // appears before the assertion's source string.
+      const helperIdx = out.indexOf('source: "await __heal_expect_screenshot(heading)"');
+      const assertionIdx = out.indexOf('source: "await expect(heading).toBeVisible();"');
+      expect(helperIdx).toBeGreaterThan(-1);
+      expect(assertionIdx).toBeGreaterThan(helperIdx);
+    });
+
+    it('hoists a non-Identifier target into an ignored const and retargets the assertion', () => {
+      const out = transform(
+        `test('x', async () => { await expect(page.getByRole('heading')).toBeVisible(); });`,
+      );
+      // A hoist `const _healExpectTarget…` carrying the
+      // @heal-tracer-ignore comment.
+      expect(out).toMatch(/@heal-tracer-ignore\s*\n\s*const _healExpectTarget/);
+      // Helper screenshots the hoisted binding…
+      expect(out).toMatch(/await globalThis\.__heal_expect_screenshot\?\.\(_healExpectTarget\w*\)/);
+      // …and the assertion now references it too — the original
+      // `page.getByRole(...)` is evaluated exactly once.
+      expect(out).toMatch(/await expect\(_healExpectTarget\w*\)\.toBeVisible\(\)/);
+    });
+
+    it('preserves the assertion statement’s original `source` field when the arg is rewritten', () => {
+      // The trace shouldn't suddenly show `expect(_healExpectTarget1)`
+      // — the user wrote `expect(page.getByRole(...))` and that's what
+      // the recorder must report. `extractSource` slices the file by
+      // the assertion node's original `start`/`end`, which is what
+      // makes this work.
+      const out = transform(
+        `test('x', async () => { await expect(page.getByRole('heading')).toBeVisible(); });`,
+      );
+      expect(out).toContain(`source: "await expect(page.getByRole('heading')).toBeVisible();"`);
+    });
+
+    it('matches `expect.soft(loc)…` and injects the same helper', () => {
+      const out = transform(`test('x', async () => { await expect.soft(loc).toBeVisible(); });`);
+      expect(out).toContain('await globalThis.__heal_expect_screenshot?.(loc)');
+    });
+
+    it('does NOT inject for `expect.poll(...)` — the first arg is a callback', () => {
+      const out = transform(`test('x', async () => { await expect.poll(() => x).toBe(2); });`);
+      expect(out).not.toContain('__heal_expect_screenshot');
+    });
+
+    it('does NOT inject for a sync expect (no top-level await)', () => {
+      const out = transform(`test('x', async () => { expect(2).toBe(2); });`);
+      expect(out).not.toContain('__heal_expect_screenshot');
+    });
+
+    it('does NOT inject inside a sync helper (no enclosing async)', () => {
+      // The helper itself is `await __heal_expect_screenshot(...)`
+      // — invalid in a non-async function. The detector is gated on
+      // the same async-enclosing predicate as the preprocess emit.
+      const out = transform(`function sync() { expect(loc).toBeVisible(); }`);
+      expect(out).not.toContain('__heal_expect_screenshot');
+    });
+
+    it('emits `{ scroll: false }` for `toBeInViewport` so the assertion outcome is preserved', () => {
+      const out = transform(`test('x', async () => { await expect(loc).toBeInViewport(); });`);
+      expect(out).toMatch(
+        /globalThis\.__heal_expect_screenshot\?\.\(loc,\s*\{\s*scroll:\s*false\s*\}\s*\)/,
+      );
+    });
+
+    it('emits `{ scroll: false }` for `not.toBeInViewport` too', () => {
+      const out = transform(`test('x', async () => { await expect(loc).not.toBeInViewport(); });`);
+      expect(out).toMatch(
+        /globalThis\.__heal_expect_screenshot\?\.\(loc,\s*\{\s*scroll:\s*false\s*\}\s*\)/,
+      );
+    });
+
+    it('omits the options arg for regular matchers (defaults to scroll: true)', () => {
+      const out = transform(`test('x', async () => { await expect(loc).toBeVisible(); });`);
+      // No second arg — the call site is just `helper?.(loc)`.
+      expect(out).toMatch(/globalThis\.__heal_expect_screenshot\?\.\(loc\)/);
+    });
+
+    describe('hideExpectScreenshots: true', () => {
+      it('folds the helper into the assertion’s try-body (no separate enter block)', () => {
+        const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`, {
+          pluginOptions: { hideExpectScreenshots: true },
+        });
+        // No synthetic `__heal_expect_screenshot` source field is
+        // emitted — the helper isn't its own statement anymore.
+        expect(out).not.toContain('source: "await __heal_expect_screenshot');
+        // But the helper call IS present, inside the assertion's try.
+        expect(out).toContain('await globalThis.__heal_expect_screenshot?.(heading)');
+        // And the assertion runs immediately AFTER the helper call —
+        // anchor on the helper-call substring and search beyond it for
+        // the user statement to avoid matching the assertion's `source:
+        // "await expect(heading)..."` meta-literal field earlier in
+        // the output.
+        const helperCall = 'await globalThis.__heal_expect_screenshot?.(heading)';
+        const helperIdx = out.indexOf(helperCall);
+        expect(helperIdx).toBeGreaterThan(-1);
+        const userIdx = out.indexOf('await expect(heading).toBeVisible()', helperIdx);
+        expect(userIdx).toBeGreaterThan(helperIdx);
+      });
+
+      it('still hoists non-Identifier targets so the locator factory runs once', () => {
+        const out = transform(
+          `test('x', async () => { await expect(page.getByRole('heading')).toBeVisible(); });`,
+          { pluginOptions: { hideExpectScreenshots: true } },
+        );
+        expect(out).toMatch(/const _healExpectTarget/);
+        expect(out).toMatch(
+          /await globalThis\.__heal_expect_screenshot\?\.\(_healExpectTarget\w*\)/,
+        );
+        expect(out).toMatch(/await expect\(_healExpectTarget\w*\)\.toBeVisible\(\)/);
+      });
+
+      it('does not double-wrap the helper — exactly one __heal_enter for the assertion', () => {
+        // In hidden mode the helper is `_traced=true`, so the
+        // Statement visitor must NOT re-process it and emit its own
+        // enter/ok block. The assertion remains a single leaf, so
+        // exactly one `__heal_enter` is generated for it (the meta
+        // literal is also reprinted inside `__heal_preprocess`,
+        // hence the source string appears twice in the output —
+        // anchor on `__heal_enter` specifically).
+        const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`, {
+          pluginOptions: { hideExpectScreenshots: true },
+        });
+        // Count `__heal_enter` calls in the entire generated source.
+        // Two are expected: one for the outer test('x', …)
+        // ExpressionStatement, one for the assertion leaf. A
+        // double-wrap of the helper would push this to 3.
+        const enterMatches = out.match(/globalThis\.__heal_enter\?\./g) ?? [];
+        expect(enterMatches).toHaveLength(2);
+        // And no synthetic `__heal_expect_screenshot` source field
+        // — the helper is part of the assertion's try-body, not its
+        // own enter event.
+        expect(out).not.toContain('source: "await __heal_expect_screenshot');
+      });
+    });
+
+    it('emits exactly two __heal_enter blocks for one visible-mode assertion', () => {
+      // Visible mode default: one enter for the synthetic helper
+      // statement, one enter for the user's assertion. Confirms the
+      // visitor revisits and wraps the inserted helper exactly once.
+      const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`);
+      // The two distinct sources from the two enter blocks.
+      expect(out).toContain('source: "await __heal_expect_screenshot(heading)"');
+      expect(out).toContain('source: "await expect(heading).toBeVisible();"');
+      // And the helper's __enter must appear before the assertion's,
+      // since it's the screenshot-capturing step that runs first.
+      const helperEnter = out.indexOf('source: "await __heal_expect_screenshot(heading)"');
+      const assertEnter = out.indexOf('source: "await expect(heading).toBeVisible();"');
+      expect(helperEnter).toBeLessThan(assertEnter);
+    });
+  });
 });

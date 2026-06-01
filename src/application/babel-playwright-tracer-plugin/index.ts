@@ -63,6 +63,17 @@
 //     a function by returning truthy. Default: instrument files whose
 //     path contains "/tests/".
 //
+//   hideExpectScreenshots : boolean
+//     Default `false`. The plugin injects an
+//     `await __heal_expect_screenshot(target)` helper in front of every
+//     `await expect(target).…` / `await expect.soft(target).…` so a
+//     highlight screenshot lands on each assertion, independent of where
+//     `expect` is imported from. The injected call is normally visible
+//     in the trace as its own leaf statement. Set this to `true` to
+//     hide the helper: it is folded into the assertion's own try-body
+//     and the screenshot stamps onto the assertion's enter event
+//     instead of getting its own.
+//
 // Every matched file has its `from '@playwright/test'` import
 // transparently rewritten to `from '@heal-dev/heal-playwright-tracer'` so
 // test authors can keep the standard Playwright import and still get our
@@ -92,11 +103,14 @@ import { createEnterMetaLiteralBuilder } from '../../domain/code-hook-injector/s
 import { createTryFinallyWrapperBuilder } from '../../domain/code-hook-injector/service/trace-hook/try-finally-wrapper';
 import { createVariableDeclarationHoister } from '../../domain/code-hook-injector/service/trace-hook/variable-declaration-hoister';
 import { createPreprocessCallBuilder } from '../../domain/code-hook-injector/service/trace-hook/preprocess-call';
+import { createExpectCallDetector } from '../../domain/code-hook-injector/service/statement-analysis/expect-call-detector';
+import { createExpectScreenshotInjector } from '../../domain/code-hook-injector/service/trace-hook/expect-screenshot-injector';
 import { HEAL_ENTER, HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 
 interface CodeHookInjectorOptions {
   include?: Include;
   rootDir?: string;
+  hideExpectScreenshots?: boolean;
 }
 
 interface TracedNode {
@@ -110,6 +124,7 @@ function codeHookInjector(
   const t = api.types;
   const CWD = opts.rootDir || process.cwd();
   const matches = buildMatcher(opts.include);
+  const hideExpectScreenshots = opts.hideExpectScreenshots === true;
 
   const { isGeneratedModuleStatement } = createCjsArtifactDetector(t);
   const { isLeafStatement, kindOf, containsAwait } = createLeafStatementClassifier(t);
@@ -134,6 +149,8 @@ function codeHookInjector(
   const { buildTryFinally, buildThrewDecl } = createTryFinallyWrapperBuilder(t, callStmt);
   const hoistVariableDeclaration = createVariableDeclarationHoister(t);
   const buildPreprocessCall = createPreprocessCallBuilder(t);
+  const expectCallDetector = createExpectCallDetector(t);
+  const expectScreenshotInjector = createExpectScreenshotInjector(t);
 
   return {
     name: 'heal-playwright-tracer',
@@ -190,6 +207,32 @@ function codeHookInjector(
           ? [buildPreprocessCall(HEAL_PREPROCESS, t.cloneNode(meta))]
           : [];
 
+        // expect-screenshot injection. The helper itself is `await
+        // globalThis.__heal_expect_screenshot?.(target)` so we only
+        // inject inside an async function — that's also where
+        // `await expect(...)` can legally appear.
+        const expectMatch = isAsyncEnclosing(stmtPath)
+          ? expectCallDetector.matchExpectCall(node)
+          : null;
+        let pendingInsertBefore: BabelTypes.Statement[] | null = null;
+        if (expectMatch) {
+          const injection = expectScreenshotInjector.build({
+            scope: stmtPath.scope,
+            target: expectMatch.target,
+            originalCode: (state.file as { code?: string }).code,
+            expectStmtLoc: node.loc,
+            expectCall: expectMatch.call,
+            mode: hideExpectScreenshots ? 'hidden' : 'visible',
+            matcherName: expectMatch.matcherName,
+          });
+          if (injection.hoistDecl || injection.insertBeforeStmt) {
+            pendingInsertBefore = [];
+            if (injection.hoistDecl) pendingInsertBefore.push(injection.hoistDecl);
+            if (injection.insertBeforeStmt) pendingInsertBefore.push(injection.insertBeforeStmt);
+          }
+          if (injection.tryBodyStmt) preTryStmts.push(injection.tryBodyStmt);
+        }
+
         if (t.isVariableDeclaration(node)) {
           // `const x = EXPR` can't be wrapped as-is — the binding
           // would be scoped to the try block and invisible downstream.
@@ -226,7 +269,11 @@ function codeHookInjector(
           tryStmt,
         ]);
 
-        stmtPath.replaceWith(wrapper);
+        if (pendingInsertBefore) {
+          stmtPath.replaceWithMultiple([...pendingInsertBefore, wrapper]);
+        } else {
+          stmtPath.replaceWith(wrapper);
+        }
       },
     },
   };

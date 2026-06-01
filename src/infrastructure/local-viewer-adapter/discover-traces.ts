@@ -35,60 +35,22 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import * as path from 'node:path';
 
 import {
-  HEAL_TRACE_SCHEMA_VERSION,
   type TestAttachment,
   type TestAttachmentsRecord,
   type TestHeader,
   type TestResultRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 import { HealTracesLayout } from '../heal-traces-layout';
-import type { ExecutionManifest, ExecutionRecord, TestStatus } from '../../domain/persistence';
+import type { ExecutionManifest, ExecutionRecord } from '../../domain/persistence';
 
-export interface ExecutionSummary {
-  executionId: string;
-  source?: 'env' | 'generated';
-  startedAt?: number;
-  endedAt?: number;
-  durationMs?: number;
-  totals?: ExecutionRecord['totals'];
-  git?: ExecutionRecord['git'];
-  playwrightVersion?: string;
-}
+import {
+  HEAL_TRACE_SCHEMA_VERSION,
+  type ExecutionSummary,
+  type IndexResponse,
+  type TestSummary,
+} from './local-server-api-types';
 
-export interface TestSummary {
-  /**
-   * Compound routing key for `/api/.../tests/:playwrightTestId/:attempt`.
-   * Format: `${playwrightTestId}_${attempt}` — the SPA splits on the
-   * last underscore. Sanitized — never contains `..`, `/`, or `\`.
-   */
-  id: string;
-  /** Underlying Playwright `testInfo.testId`. */
-  playwrightTestId: string;
-  /** 1-indexed attempt number. */
-  attempt: number;
-  /** NDJSON path relative to `<rootDir>/heal-traces/<executionId>/`. */
-  ndjsonPath: string;
-  title: string;
-  titlePath: string[];
-  file: string;
-  project: string;
-  status: TestStatus;
-  duration: number;
-  startedAt: number;
-  /**
-   * All Playwright attachments for this test. Sourced from the
-   * NDJSON's `test-attachments` record. Empty when the reporter
-   * isn't registered. Videos are NOT separately exposed — consumers
-   * filter on `contentType.startsWith('video/')` to derive them.
-   */
-  attachments: TestAttachment[];
-}
-
-export interface ViewerIndex {
-  schemaVersion: number;
-  executionId: string;
-  tests: TestSummary[];
-}
+export type { ExecutionSummary, IndexResponse, TestSummary };
 
 const isSafeId = (id: string): boolean =>
   id.length > 0 && !id.includes('..') && !id.includes('/') && !id.includes('\\');
@@ -228,6 +190,10 @@ const summarize = async (found: FoundAttempt): Promise<TestSummary | null> => {
     duration: result?.duration ?? 0,
     startedAt: header.startedAt,
     attachments,
+    // Placeholder — recomputed fresh by `serveIndex` so newly-completed
+    // analyses surface without restarting the viewer / invalidating the
+    // discoverTraces cache.
+    hasAnalyzeVerdict: false,
   };
 };
 
@@ -257,7 +223,7 @@ export const discoverTraces = async (
   return summaries;
 };
 
-export const buildIndex = (executionId: string, tests: TestSummary[]): ViewerIndex => ({
+export const buildIndex = (executionId: string, tests: TestSummary[]): IndexResponse => ({
   schemaVersion: HEAL_TRACE_SCHEMA_VERSION,
   executionId,
   tests,

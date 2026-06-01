@@ -45,7 +45,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { expect as rawExpect, test as base, request as playwrightRequest } from '@playwright/test';
+import { expect, test as base, request as playwrightRequest } from '@playwright/test';
 // Side-effect: installs `globalThis.__heal_enter/__heal_ok/__heal_throw`.
 import {
   reset,
@@ -59,7 +59,6 @@ import {
   getStartedAt,
   clock,
 } from '../trace-event-recorder-runtime';
-import { wrapExpect } from '../../infrastructure/playwright-locator-screenshot-adapter';
 import { StatementProjector } from '../../domain/trace-event-recorder/service/projectors';
 import { NdjsonExporter } from '../../infrastructure/ndjson-exporter-adapter';
 import { CompositeHealTraceExporter } from '../../domain/trace-event-recorder/service';
@@ -101,12 +100,12 @@ import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-me
 const DEFAULT_SCREENSHOT_TIMEOUT_MS = 10_000;
 const DEFAULT_LIFECYCLE_TIMEOUT_MS = 30_000;
 
-// Wrap `expect` so any assertion made against a Locator gets a
-// highlight screenshot stamped onto the active statement, the same
-// way locator actions do. Non-locator assertions fall through.
-const expect = wrapExpect(
-  rawExpect as unknown as (...args: unknown[]) => unknown,
-) as typeof rawExpect;
+// Highlight screenshots on locator assertions (`expect(loc).toBeVisible()`,
+// `expect.soft(loc).toHaveText(…)`, …) are wired by the Babel plugin,
+// not by wrapping `expect` here — the plugin injects an
+// `await __heal_expect_screenshot(target)` helper line in front of every
+// matched assertion, so the capture works regardless of where `expect`
+// was imported from.
 
 // All artefacts this package produces live under
 // `<cwd>/heal-traces/<executionId>/<playwrightTestId>/<attempt>/`.
