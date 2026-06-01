@@ -12,6 +12,7 @@
 //   GET /api/executions/:executionId/tests/:playwrightTestId/:attempt
 //   GET /api/executions/:executionId/asset/:playwrightTestId/:attempt/<path>
 //   GET /api/executions/:executionId/screenshot/:playwrightTestId/:attempt/<file>
+//   GET /api/executions/:executionId/source/:playwrightTestId/:attempt/<path>
 //
 // `:playwrightTestId` is Playwright's `testInfo.testId`; `:attempt`
 // is 1-indexed. Together they identify exactly one
@@ -47,6 +48,7 @@ import type {
   ExecutionSummary,
   ExecutionsResponse,
   IndexResponse,
+  SourceRef,
   TestSummary,
   TraceResponse,
 } from './local-server-api-types';
@@ -331,6 +333,13 @@ export class LocalViewerServer {
     const assetMatch = /^\/api\/executions\/([^/]+)\/asset\/([^/]+)\/(\d+)\/(.+)$/.exec(pathname);
     if (assetMatch) {
       await this.serveAsset(res, assetMatch[1], assetMatch[2], assetMatch[3], assetMatch[4]);
+
+      return;
+    }
+
+    const sourceMatch = /^\/api\/executions\/([^/]+)\/source\/([^/]+)\/(\d+)\/(.+)$/.exec(pathname);
+    if (sourceMatch) {
+      await this.serveSource(res, sourceMatch[1], sourceMatch[2], sourceMatch[3], sourceMatch[4]);
 
       return;
     }
@@ -631,6 +640,7 @@ export class LocalViewerServer {
 
     const baseScreenshotUrl = `/api/executions/${encodeURIComponent(rawExecutionId)}/screenshot/${encodeURIComponent(rawTestId)}/${attempt}`;
     const baseAssetUrl = `/api/executions/${encodeURIComponent(rawExecutionId)}/asset/${encodeURIComponent(rawTestId)}/${attempt}`;
+    const baseSourceUrl = `/api/executions/${encodeURIComponent(rawExecutionId)}/source/${encodeURIComponent(rawTestId)}/${attempt}`;
 
     const rewritten = rewriteScreenshots(
       trace.statements,
@@ -648,11 +658,22 @@ export class LocalViewerServer {
       path: a.path,
       contentType: a.contentType,
     }));
+    const source: SourceRef[] = trace.source.map((f) => {
+      const ref: SourceRef = {
+        url: `${baseSourceUrl}/${encodePath(f.path)}`,
+        path: f.path,
+        bytes: f.bytes,
+      };
+      if (f.entry) ref.entry = true;
+      if (f.truncated) ref.truncated = true;
+      return ref;
+    });
     const response: TraceResponse = {
       header: trace.header,
       statements: rewritten,
       result: trace.result,
       attachments,
+      source,
     };
     sendJson(res, 200, response);
   }
@@ -690,6 +711,60 @@ export class LocalViewerServer {
     const testDir = layout.testDir(rawTestId, attempt);
     const filePath = path.resolve(path.join(testDir, rawFile));
     if (!filePath.startsWith(path.resolve(testDir) + path.sep)) {
+      sendText(res, 400, 'Path traversal rejected');
+
+      return;
+    }
+    try {
+      await stat(filePath);
+    } catch {
+      sendText(res, 404, 'Not found');
+
+      return;
+    }
+    streamFile(res, filePath);
+  }
+
+  private async serveSource(
+    res: http.ServerResponse,
+    rawExecutionId: string,
+    rawTestId: string,
+    rawAttempt: string,
+    rawFile: string,
+  ): Promise<void> {
+    if (!isSafeIdForRouting(rawExecutionId)) {
+      sendText(res, 400, 'Bad executionId');
+
+      return;
+    }
+    if (!isSafeIdForRouting(rawTestId)) {
+      sendText(res, 400, 'Bad playwrightTestId');
+
+      return;
+    }
+    const attempt = this.parseAttempt(rawAttempt);
+    if (attempt === null) {
+      sendText(res, 400, 'Bad attempt');
+
+      return;
+    }
+    if (rawFile.includes('..') || path.isAbsolute(rawFile) || rawFile.includes('\\')) {
+      sendText(res, 400, 'Bad filename');
+
+      return;
+    }
+
+    const layout = new HealTracesLayout(this.options.rootDir, rawExecutionId);
+    let filePath: string;
+    try {
+      filePath = layout.sourcePath(rawTestId, attempt, rawFile);
+    } catch {
+      sendText(res, 400, 'Path traversal rejected');
+
+      return;
+    }
+    const sourcesDir = path.resolve(layout.sourcesDir(rawTestId, attempt));
+    if (filePath !== sourcesDir && !filePath.startsWith(sourcesDir + path.sep)) {
       sendText(res, 400, 'Path traversal rejected');
 
       return;

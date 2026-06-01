@@ -31,6 +31,7 @@ import type {
   TestEnv,
   TestHeader,
   TestResultRecord,
+  TestSourceFile,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 
 export type {
@@ -42,6 +43,7 @@ export type {
   TestEnv,
   TestHeader,
   TestResultRecord,
+  TestSourceFile,
   TestStatus,
 };
 
@@ -138,6 +140,23 @@ export interface AttachmentRef {
   contentType: string;
 }
 
+/**
+ * Wire-side source-file reference. Carries the manifest fields from
+ * `TestSourceFile` plus an absolute `url` the SPA can fetch to read
+ * the file's full content. The server resolves URLs against the
+ * `/api/executions/:executionId/source/:testId/:attempt/...` endpoint;
+ * `truncated: true` entries point at a non-existent file (the capture
+ * step skipped copy due to size) and the fetch will 404 — clients
+ * should branch on the flag before fetching.
+ */
+export interface SourceRef {
+  url: string;
+  path: string;
+  bytes: number;
+  entry?: boolean;
+  truncated?: boolean;
+}
+
 export interface TraceResponse {
   header: TestHeader;
   /**
@@ -149,6 +168,13 @@ export interface TraceResponse {
   statements: Statement[];
   result?: TestResultRecord;
   attachments: AttachmentRef[];
+  /**
+   * Source-file manifest entries for the test — the spec file plus
+   * every user file it transitively imports. Empty when source
+   * capture was not enabled at run time. Each `url` resolves to the
+   * file's full content via the source endpoint.
+   */
+  source: SourceRef[];
 }
 
 // ─── /api/exec ─────────────────────────────────────────────────────

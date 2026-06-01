@@ -19,9 +19,14 @@
 //      inside `statement.children` and never appear as standalone
 //      records. Consumers must not expect a flat stream of every
 //      executed statement.
-//   3. Exactly one `test-result` record (last line). If it is
-//      missing, the test crashed mid-run and the trace should be
-//      treated as partial.
+//   3. Optionally, a `test-source` record listing the test's
+//      transitive source-file manifest. Written by the fixture only
+//      when `configureTracer({ source: { enabled: true } })` opts in.
+//      Absent otherwise; absence is not an error.
+//   4. Exactly one `test-result` record. If it is missing, the test
+//      crashed mid-run and the trace should be treated as partial.
+//      A `test-attachments` record may be appended AFTER `test-result`
+//      by the optional reporter — see `TestAttachmentsRecord`.
 //
 // The projector in `../../trace-event-recorder/projectors/
 // statement-projector.ts` is what produces these records from the
@@ -29,7 +34,7 @@
 // Heal autopilot agent, humans debugging a failing test) should
 // import these types to stay in sync with the file format.
 
-export const HEAL_TRACE_SCHEMA_VERSION = 2;
+export const HEAL_TRACE_SCHEMA_VERSION = 3;
 
 /**
  * One line of a `heal-traces.ndjson` file. Discriminated by `kind`.
@@ -38,7 +43,8 @@ export type HealTraceRecord =
   | TestHeaderRecord
   | StatementRecord
   | TestResultRecord
-  | TestAttachmentsRecord;
+  | TestAttachmentsRecord
+  | TestSourceRecord;
 
 export interface TestHeaderRecord {
   kind: 'test-header';
@@ -275,6 +281,51 @@ export interface TestAttachment {
    * presence rules as `pageName`.
    */
   pageUrl?: string;
+}
+
+/**
+ * Optional record appended by the in-worker fixture (BEFORE
+ * `test-result`) when source-capture is enabled via
+ * `configureTracer({ source: { enabled: true } })`. Carries a manifest
+ * of every source file in the test's transitive import graph — the
+ * spec plus every user file it imports (excluding `node_modules` and
+ * out-of-root paths).
+ *
+ * The manifest stores PATHS ONLY. The file contents themselves live on
+ * disk under the per-test `sources/` directory (a sibling of
+ * `screenshots/` and `videos/`), so the NDJSON stays small and the
+ * trace dir remains the single source of truth. Consumers (the
+ * autopilot agent reading NDJSON directly, the local viewer server)
+ * read content from disk by joining `<rootDir>/<path>`.
+ *
+ * Absent when source-capture is disabled. Absence is not an error —
+ * the trace is still complete; downstream tools should treat the
+ * source list as empty.
+ */
+export interface TestSourceRecord {
+  kind: 'test-source';
+  files: TestSourceFile[];
+}
+
+export interface TestSourceFile {
+  /**
+   * Path RELATIVE to the per-test directory (the parent of `sources/`),
+   * using forward slashes on every platform. The corresponding file
+   * lives at `<testDir>/<path>` — typically `sources/<project-rel>`
+   * where `<project-rel>` mirrors the file's project-relative path
+   * (e.g. `sources/tests/foo.spec.ts`, `sources/pages/login.ts`).
+   */
+  path: string;
+  /** Byte size of the captured file (after read). */
+  bytes: number;
+  /** True for the spec file itself (the entry of the import graph). */
+  entry?: boolean;
+  /**
+   * True when the file exceeded `maxFileBytes` and was NOT written to
+   * disk. The manifest entry still records its existence + size for
+   * inventory purposes; consumers reading from disk will get 404.
+   */
+  truncated?: boolean;
 }
 
 /**

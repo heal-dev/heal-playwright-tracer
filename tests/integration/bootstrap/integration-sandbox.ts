@@ -62,6 +62,20 @@ export interface SandboxOptions {
    * by the video-page-metadata integration test.
    */
   withVideo?: boolean;
+  /**
+   * When true, opt into source-file capture via
+   * `configureTracer({ source: { enabled: true } })`. Used by the
+   * source-capture integration test to exercise the end-to-end import-
+   * graph resolve + copy + manifest path against a real Playwright run.
+   */
+  withSourceCapture?: boolean;
+  /**
+   * Additional files to write into the sandbox alongside the spec.
+   * Map of paths relative to the sandbox root → file content. Used
+   * by tests that need helper modules under `tests/` (so the tracer's
+   * import-graph resolver has something non-trivial to walk).
+   */
+  extraFiles?: Record<string, string>;
 }
 
 export class IntegrationSandbox {
@@ -103,6 +117,12 @@ export class IntegrationSandbox {
 
     fs.mkdirSync(path.join(root, 'tests'));
     fs.writeFileSync(path.join(root, 'tests', 'scenarios.spec.ts'), this.opts.specSource);
+
+    for (const [rel, content] of Object.entries(this.opts.extraFiles ?? {})) {
+      const abs = path.join(root, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content);
+    }
 
     return root;
   }
@@ -182,7 +202,7 @@ export class IntegrationSandbox {
     // independent — both can be enabled, neither is, or one of each.
     const importLines: string[] = [`import { defineConfig } from '@playwright/test';`];
     const tracerOpts: string[] = [];
-    if (this.opts.withStubExporter || this.opts.withPreProcessor) {
+    if (this.opts.withStubExporter || this.opts.withPreProcessor || this.opts.withSourceCapture) {
       importLines.push(`import { configureTracer } from '@heal-dev/heal-playwright-tracer';`);
     }
     if (this.opts.withStubExporter) {
@@ -192,6 +212,9 @@ export class IntegrationSandbox {
     if (this.opts.withPreProcessor) {
       importLines.push(`import { recordingPreProcessor } from './heal-preprocess';`);
       tracerOpts.push(`preProcessors: [recordingPreProcessor]`);
+    }
+    if (this.opts.withSourceCapture) {
+      tracerOpts.push(`source: { enabled: true }`);
     }
     const head =
       tracerOpts.length === 0
