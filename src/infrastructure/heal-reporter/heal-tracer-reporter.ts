@@ -69,6 +69,7 @@ import {
 import { HealTracesLayout, getExecutionIdSource, resolveExecutionId } from '../heal-traces-layout';
 import { CrashErrorClassifier } from './crash-error-classifier';
 import { FailingStatementFinder } from './failing-statement-finder';
+import { LocationBasedFailureFinder } from './location-based-failure-finder';
 import { NdjsonTailInspector } from './ndjson-tail-inspector';
 import { log } from '../../util/logger';
 
@@ -235,6 +236,7 @@ export interface HealTracerReporterDeps {
   classifier?: CrashErrorClassifier;
   inspector?: NdjsonTailInspector;
   failingStatementFinder?: FailingStatementFinder;
+  locationFinder?: LocationBasedFailureFinder;
   /**
    * Seam for tests — defaults to `fs.appendFileSync`. Kept sync so
    * the synthetic line hits disk before the reporter returns, same
@@ -259,6 +261,7 @@ export class HealTracerReporter implements Reporter {
   private readonly classifier: CrashErrorClassifier;
   private readonly inspector: NdjsonTailInspector;
   private readonly failingStatementFinder: FailingStatementFinder;
+  private readonly locationFinder: LocationBasedFailureFinder;
   private readonly appendFile: (path: string, data: string) => void;
   private readonly onRescue: RescueHook | null;
   private readonly onAttachmentsWritten: AttachmentsHook | null;
@@ -287,6 +290,7 @@ export class HealTracerReporter implements Reporter {
     this.classifier = deps.classifier ?? new CrashErrorClassifier();
     this.inspector = deps.inspector ?? new NdjsonTailInspector();
     this.failingStatementFinder = deps.failingStatementFinder ?? new FailingStatementFinder();
+    this.locationFinder = deps.locationFinder ?? new LocationBasedFailureFinder();
     this.appendFile = deps.appendFile ?? ((p, d) => fs.appendFileSync(p, d, { encoding: 'utf8' }));
     this.onRescue = deps.onRescue ?? null;
     this.onAttachmentsWritten = deps.onAttachmentsWritten ?? null;
@@ -658,7 +662,15 @@ export class HealTracerReporter implements Reporter {
     };
 
     if (attempt.status !== 'passed' && attempt.status !== 'skipped') {
-      const found = ndjsonPath ? this.failingStatementFinder.find(ndjsonPath) : null;
+      // Primary: map Playwright's reported error location onto a
+      // recorded statement (precise, scope-agnostic, ignores caught
+      // throws). Fallback: the scope-shape heuristic, for failures
+      // Playwright couldn't locate (crash, timeout, non-instrumented
+      // file).
+      const found = ndjsonPath
+        ? (this.locationFinder.find(result.errors, ndjsonPath) ??
+          this.failingStatementFinder.find(ndjsonPath))
+        : null;
       if (found) {
         attempt.failingStatement = found.statement;
         attempt.error = found.error;
