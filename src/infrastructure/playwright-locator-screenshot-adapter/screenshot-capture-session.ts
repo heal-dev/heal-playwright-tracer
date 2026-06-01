@@ -87,6 +87,26 @@ export class ScreenshotCaptureSession {
     private readonly screenshotTimeoutMs: number,
   ) {}
 
+  // Plain viewport screenshot — no overlay, no measure, no scroll.
+  // Used by the expect-screenshot helper when the asserted locator
+  // matches zero elements (typical for `toHaveCount(0)`, `toBeHidden()`,
+  // `.not.toBeVisible()`): there's nothing to frame, but the user
+  // still benefits from seeing the page state at the assertion.
+  // Increments the same `seq` counter and writes to the same
+  // `highlight-${seq}-${actionName}.png` filename as the highlight
+  // path so screenshots stay numbered consistently within a test.
+  async captureViewportOnly(page: Page, actionName: string): Promise<void> {
+    const seq = ++this.seq;
+    const filename = `highlight-${seq}-${actionName}.png`;
+    const fullPath = path.join(this.outputDir, filename);
+    try {
+      await this.takeScreenshot(page, fullPath);
+      this.onScreenshotWritten(filename);
+    } catch (err) {
+      log.warn(`captureViewportOnly takeScreenshot rejected for ${actionName}`, err);
+    }
+  }
+
   // Returns a cleanup closure to call after the action/assertion
   // completes (caller invokes it in `finally`), or `null` if no
   // cleanup is needed (capture-not-attempted cases).
