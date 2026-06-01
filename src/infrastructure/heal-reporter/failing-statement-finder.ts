@@ -4,8 +4,15 @@
  * Please see the LICENSE file at the root of this repository
  */
 
+// FALLBACK failure locator, used by `HealTracerReporter.onTestEnd` when
+// Playwright did not give us a usable error location (worker crash,
+// timeout with no user frame, a failure in a non-instrumented file). The
+// PRIMARY path is `LocationBasedFailureFinder`, which maps Playwright's
+// `result.errors[].location` straight onto a recorded statement; this
+// scope-shape heuristic only runs when that returns nothing.
+//
 // Locates the statement responsible for a test failure inside one
-// `heal-traces.ndjson`, used by `HealTracerReporter.onTestEnd`.
+// `heal-traces.ndjson` purely from the trace's own `ok`/`threw` shape.
 //
 // Group root statements by `scope` (test body / beforeEach / afterEach /
 // …). Walk groups in encounter order. The first group whose LAST root
@@ -27,13 +34,12 @@
 // trace alone. Long-term fix is AST-tagging statements lexically
 // inside try/catch at trace ingest. Rare in practice.
 
-import * as fs from 'fs';
-
 import type { FailingStatement } from '../../domain/persistence';
 import type {
   Statement,
   StatementError,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
+import { parseStatementRoots, projectFailingStatement } from './parse-statement-roots';
 
 export interface FoundFailure {
   statement: FailingStatement;
@@ -42,27 +48,7 @@ export interface FoundFailure {
 
 export class FailingStatementFinder {
   find(ndjsonPath: string): FoundFailure | null {
-    let body: string;
-    try {
-      body = fs.readFileSync(ndjsonPath, 'utf8');
-    } catch {
-      return null;
-    }
-
-    const roots: Statement[] = [];
-    for (const line of body.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      let parsed: { kind?: unknown; statement?: Statement } | null;
-      try {
-        parsed = JSON.parse(trimmed) as { kind?: unknown; statement?: Statement };
-      } catch {
-        // Tolerate torn last line (mirrors `NdjsonTailInspector`).
-        continue;
-      }
-      if (parsed?.kind !== 'statement' || !parsed.statement) continue;
-      roots.push(parsed.statement);
-    }
+    const roots = parseStatementRoots(ndjsonPath);
 
     // Walk consecutive same-scope groups. First group whose last root
     // is `threw` is the crashing scope.
@@ -79,7 +65,7 @@ export class FailingStatementFinder {
         const found = findDeepestUncaughtThrew(lastInGroup, 0, true);
         if (found && found.stmt.error) {
           return {
-            statement: project(found.stmt),
+            statement: projectFailingStatement(found.stmt),
             error: found.stmt.error,
           };
         }
@@ -111,17 +97,4 @@ function findDeepestUncaughtThrew(
   }
 
   return best;
-}
-
-function project(stmt: Statement): FailingStatement {
-  return {
-    index: stmt.index,
-    file: stmt.file,
-    line: stmt.line,
-    endLine: stmt.endLine,
-    source: stmt.source,
-    scope: stmt.scope,
-    step: stmt.step,
-    stepPath: stmt.stepPath,
-  };
 }
