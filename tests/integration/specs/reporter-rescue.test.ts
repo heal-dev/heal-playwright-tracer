@@ -61,7 +61,7 @@ function getTrace(title: string): ParsedTrace {
 describe('integration: HealTracerReporter end-to-end', () => {
   it('clean-pass: fixture writes the terminator, reporter stays silent', () => {
     const trace = getTrace('clean-pass');
-    expect(trace.schemaVersion).toBe(2);
+    expect(trace.schemaVersion).toBe(3);
     expect(trace.test.status).toBe('passed');
     // Reporter-synthesized test-results ALWAYS carry `error`. The
     // fixture-written terminator on a clean pass never does — this
@@ -77,7 +77,7 @@ describe('integration: HealTracerReporter end-to-end', () => {
 
   it('worker-crash: reporter rescues the NDJSON and stamps WorkerCrash', () => {
     const trace = getTrace('worker-crash');
-    expect(trace.schemaVersion).toBe(2);
+    expect(trace.schemaVersion).toBe(3);
 
     // The synthetic test-result MUST carry `error` — that's how we
     // know it came from the reporter's main-process rescue path
@@ -102,7 +102,7 @@ describe('integration: HealTracerReporter end-to-end', () => {
 
   it('playwright-timeout: fixture flushes the pending root with the test-level timeout error', () => {
     const trace = getTrace('playwright-timeout');
-    expect(trace.schemaVersion).toBe(2);
+    expect(trace.schemaVersion).toBe(3);
 
     // Playwright aborts the test body, so the test-result carries
     // status=timedOut. The fixture wrote this record (`error`

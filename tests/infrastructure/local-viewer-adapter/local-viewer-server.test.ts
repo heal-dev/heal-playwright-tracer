@@ -58,6 +58,14 @@ const ATTACHMENTS = {
     { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
   ],
 };
+const SOURCE_RECORD = {
+  kind: 'test-source',
+  files: [
+    { path: 'tests/auth.spec.ts', bytes: 42, entry: true },
+    { path: 'pages/login.ts', bytes: 17 },
+    { path: 'pages/huge.ts', bytes: 9_999_999, truncated: true },
+  ],
+};
 const EXECUTION_RECORD = {
   kind: 'execution',
   executionId: EXEC,
@@ -91,9 +99,23 @@ beforeAll(async () => {
   const testDir = path.join(root, 'heal-traces', EXEC, TID, String(ATTEMPT));
   await mkdir(path.join(testDir, 'screenshots'), { recursive: true });
   await mkdir(path.join(testDir, 'videos'), { recursive: true });
+  await mkdir(path.join(testDir, 'sources', 'tests'), { recursive: true });
+  await mkdir(path.join(testDir, 'sources', 'pages'), { recursive: true });
+  await writeFile(
+    path.join(testDir, 'sources', 'tests', 'auth.spec.ts'),
+    "import { login } from '../pages/login';\nlogin();\n",
+    'utf-8',
+  );
+  await writeFile(
+    path.join(testDir, 'sources', 'pages', 'login.ts'),
+    'export const login = () => {};\n',
+    'utf-8',
+  );
   await writeFile(
     path.join(testDir, 'heal-traces.ndjson'),
-    [HEADER, STMT_WITH_SCREENSHOT, RESULT, ATTACHMENTS].map((l) => JSON.stringify(l)).join('\n'),
+    [HEADER, STMT_WITH_SCREENSHOT, SOURCE_RECORD, RESULT, ATTACHMENTS]
+      .map((l) => JSON.stringify(l))
+      .join('\n'),
     'utf-8',
   );
   await writeFile(
@@ -156,7 +178,7 @@ describe('LocalViewerServer', () => {
       tests: { id: string; title: string; playwrightTestId: string; attempt: number }[];
     };
     expect(json.executionId).toBe(EXEC);
-    expect(json.schemaVersion).toBe(2);
+    expect(json.schemaVersion).toBe(3);
     expect(json.tests).toHaveLength(1);
     expect(json.tests[0]).toMatchObject({
       id: `${TID}_${ATTEMPT}`,
@@ -231,6 +253,52 @@ describe('LocalViewerServer', () => {
   it('rejects path traversal in asset path', async () => {
     const res = await fetch(
       `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/${encodeURIComponent('../../etc/passwd')}`,
+    );
+    expect(res.status).toBe(400);
+  });
+
+  // --- /source/... endpoint --------------------------------------------
+
+  it('GET /api/.../tests/:tid/:attempt carries a source[] with URLs and flags', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
+    const trace = (await res.json()) as {
+      source: { url: string; path: string; bytes: number; entry?: boolean; truncated?: boolean }[];
+    };
+    expect(trace.source).toHaveLength(3);
+    const spec = trace.source.find((s) => s.path === 'tests/auth.spec.ts');
+    expect(spec?.entry).toBe(true);
+    expect(spec?.url).toBe(`/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/tests/auth.spec.ts`);
+    const huge = trace.source.find((s) => s.path === 'pages/huge.ts');
+    expect(huge?.truncated).toBe(true);
+  });
+
+  it('GET /api/.../source/:tid/:attempt/<path> streams the source file content', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/tests/auth.spec.ts`,
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("import { login } from '../pages/login'");
+  });
+
+  it('GET source for a nested file resolves under sources/', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/pages/login.ts`,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('export const login');
+  });
+
+  it('GET source for a truncated (uncopied) entry returns 404', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/pages/huge.ts`,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('rejects path traversal in source path', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/${encodeURIComponent('../../etc/passwd')}`,
     );
     expect(res.status).toBe(400);
   });
