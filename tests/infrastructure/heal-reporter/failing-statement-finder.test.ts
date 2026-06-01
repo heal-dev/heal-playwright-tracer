@@ -700,6 +700,182 @@ describe('FailingStatementFinder', () => {
     expect(found?.error.message).toBe('DB reset failed');
   });
 
+  it('test body nested under an `ok` fixture `use()` wrapper: descends to the body crash', () => {
+    // Real production shape (heal-stories `admins can delete secrets`):
+    // the test body runs inside an auth fixture's `await use(...)`, so
+    // the tracer records the whole body as DESCENDANTS of that `use()`
+    // call. `use()` resolves `ok` (Playwright catches the body throw at
+    // the fixture boundary), so NO root scope-group ends in `threw` and
+    // the primary scan finds nothing. The fallback must descend through
+    // the `ok` wrapper to the nested `test:` scope and find the crash.
+    const p = writeNdjson([
+      { kind: 'test-header', test: {} },
+      {
+        kind: 'statement',
+        statement: leafStmt({
+          index: 0,
+          status: 'ok',
+          scope: '<anonymous>',
+          source: "await use(await authenticate(browser, 'admin'))",
+          children: [
+            leafStmt({ index: 1, status: 'ok', scope: 'authenticate', source: 'await login()' }),
+            leafStmt({
+              index: 2,
+              status: 'ok',
+              scope: 'test: admins can delete secrets',
+              source: "await page.goto('/secrets')",
+            }),
+            leafStmt({
+              index: 3,
+              status: 'threw',
+              scope: 'test: admins can delete secrets',
+              source: "await expect(page.getByText('No secrets yet.')).toBeVisible()",
+              error: { message: 'element(s) not found', isPlaywrightError: true },
+            }),
+          ],
+        }),
+      },
+      { kind: 'test-result', status: 'failed', duration: 1 },
+    ]);
+    const found = finder.find(p);
+    expect(found?.statement.index).toBe(3);
+    expect(found?.statement.scope).toBe('test: admins can delete secrets');
+    expect(found?.error.isPlaywrightError).toBe(true);
+  });
+
+  it('test body nested under a CHAIN of `ok` use() wrappers: still descends to the crash', () => {
+    // Mirrors the exact failing trace: use(authenticate) → withRecorded
+    // Context → use(ctx) → use(newPage()), all `ok`, with the test body
+    // (and its throw) at the bottom of the chain.
+    const p = writeNdjson([
+      {
+        kind: 'statement',
+        statement: leafStmt({
+          index: 0,
+          status: 'ok',
+          scope: '<anonymous>',
+          source: 'await use(await authenticate())',
+          children: [
+            leafStmt({
+              index: 1,
+              status: 'ok',
+              scope: '<anonymous>',
+              source: 'await withRecordedContext()',
+              children: [
+                leafStmt({
+                  index: 2,
+                  status: 'ok',
+                  scope: 'withRecordedContext',
+                  source: 'await use(ctx)',
+                  children: [
+                    leafStmt({
+                      index: 3,
+                      status: 'ok',
+                      scope: '<anonymous>',
+                      source: 'await use(await adminContext.newPage())',
+                      children: [
+                        leafStmt({
+                          index: 4,
+                          status: 'ok',
+                          scope: 'test: admins can delete secrets',
+                          source: "await page.goto('/secrets')",
+                        }),
+                        leafStmt({
+                          index: 5,
+                          status: 'threw',
+                          scope: 'test: admins can delete secrets',
+                          source: "await expect(page.getByText('No secrets yet.')).toBeVisible()",
+                          error: { message: 'element(s) not found' },
+                        }),
+                      ],
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          ],
+        }),
+      },
+    ]);
+    const found = finder.find(p);
+    expect(found?.statement.index).toBe(5);
+    expect(found?.error.message).toBe('element(s) not found');
+  });
+
+  it('failure inside a propagating helper nested under an `ok` use() wrapper: picks the leaf', () => {
+    // The body crash is in a helper that propagates: the `test:` call
+    // threw, the helper internals threw too. Fallback finds the `test:`
+    // group's last (threw), then drills to the deepest uncaught throw.
+    const p = writeNdjson([
+      {
+        kind: 'statement',
+        statement: leafStmt({
+          index: 0,
+          status: 'ok',
+          scope: '<anonymous>',
+          source: 'await use(page)',
+          children: [
+            leafStmt({
+              index: 1,
+              status: 'threw',
+              scope: 'test: t',
+              source: 'await assertVisible()',
+              error: { message: 'not visible' },
+              children: [
+                leafStmt({
+                  index: 2,
+                  status: 'threw',
+                  scope: 'assertVisible',
+                  source: 'await expect(loc).toBeVisible()',
+                  error: { message: 'not visible', isPlaywrightError: true },
+                }),
+              ],
+            }),
+          ],
+        }),
+      },
+    ]);
+    const found = finder.find(p);
+    expect(found?.statement.index).toBe(2);
+    expect(found?.error.isPlaywrightError).toBe(true);
+  });
+
+  it('helper internal try/catch under an `ok` wrapper (NOT a lifecycle scope): stays null', () => {
+    // A regular helper called from a fixture: `await closeModal()`
+    // resolves `ok`, but inside it a `waitFor()` threw and was caught by
+    // the helper (nothing after it in the helper scope). The throw is in
+    // a non-lifecycle scope, so the fallback must NOT resurface it.
+    const p = writeNdjson([
+      {
+        kind: 'statement',
+        statement: leafStmt({
+          index: 0,
+          status: 'ok',
+          scope: '<anonymous>',
+          source: 'await use(page)',
+          children: [
+            leafStmt({
+              index: 1,
+              status: 'ok',
+              scope: 'fixtureSetup',
+              source: 'await closeModalIfExists()',
+              children: [
+                leafStmt({
+                  index: 2,
+                  status: 'threw',
+                  scope: 'closeModalIfExists',
+                  source: 'await btn.waitFor({ timeout: 15_000 })',
+                  error: { message: 'caught by helper' },
+                }),
+              ],
+            }),
+          ],
+        }),
+      },
+    ]);
+    expect(finder.find(p)).toBeNull();
+  });
+
   it('ignores non-statement records (test-header, test-result, test-attachments)', () => {
     const p = writeNdjson([
       { kind: 'test-header', test: {} },

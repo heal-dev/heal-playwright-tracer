@@ -17,10 +17,12 @@
 // writes the REAL failure (not the swallowed probe) into
 // `execution.json`'s `failingStatement` + `error`.
 //
-// Two scenarios in one Playwright run (amortizes install + worker
-// startup): the source try/catch in the test body, and the same in a
-// `beforeEach` hook (exercising cross-scope fall-through). Both match
-// the per-test titles in `failing-statement-spec.ts`.
+// Three scenarios in one Playwright run (amortizes install + worker
+// startup): the source try/catch in the test body, the same in a
+// `beforeEach` hook (exercising cross-scope fall-through), and a test
+// body nested inside a custom fixture's `await use(...)` (exercising the
+// nested fallback for a body crash hidden under an `ok` use() wrapper).
+// All match the per-test titles in `failing-statement-spec.ts`.
 
 import { beforeAll, describe, it, expect } from 'vitest';
 import { IntegrationSandbox } from '../bootstrap/integration-sandbox';
@@ -144,5 +146,62 @@ describe('integration: FailingStatementFinder scope-grouping end-to-end', () => 
     expect(attempt.failingStatement).toBeDefined();
     expect(attempt.failingStatement!.source).toContain('body-expected');
     expect(attempt.failingStatement!.source).not.toContain('swallowed hook probe');
+  });
+
+  it('fixture use() wrapper: the body failure is recorded as a NESTED threw under an `ok` use() root', () => {
+    // The load-bearing claim for the nested fallback: the real
+    // Babel-instrumented tracer records a body that runs inside a
+    // fixture's `await use(...)` as DESCENDANTS of that use() statement,
+    // and use() itself resolves `ok` despite the body throwing. If this
+    // shape ever changes, the unit tests still pass but production
+    // regresses — this assertion is the only guard against that.
+    const title = 'fixture-use-wrapped-body-failure';
+    const trace = getTrace(title);
+
+    const realFailure = findStatement(trace, (s) => s.source.includes('wrapped-expected-value'));
+    expect(realFailure, 'the uncaught expect should be recorded').toBeDefined();
+    expect(realFailure!.status).toBe('threw');
+    expect(realFailure!.scope, 'the failure lives in the test-body scope').toContain(title);
+
+    // It must NOT be a root statement — it lives under the fixture
+    // wrapper. (Roots are `trace.statements`; nested calls live in each
+    // statement's `children`.) This is exactly what defeats the
+    // root-only primary scan.
+    const isRoot = trace.statements.some((s) => s === realFailure);
+    expect(isRoot, 'the body failure must be NESTED, not a root statement').toBe(false);
+
+    // And every ROOT scope-group ends in `ok` (the use() wrappers and
+    // their `ok` resolutions) — so the primary scan finds nothing and
+    // the nested fallback is the only thing that can locate the crash.
+    let groupStart = 0;
+    while (groupStart < trace.statements.length) {
+      const scope = trace.statements[groupStart].scope;
+      let groupEnd = groupStart + 1;
+      while (groupEnd < trace.statements.length && trace.statements[groupEnd].scope === scope) {
+        groupEnd++;
+      }
+      expect(
+        trace.statements[groupEnd - 1].status,
+        `root scope-group "${scope}" must end in ok (crash is hidden, not at root)`,
+      ).toBe('ok');
+      groupStart = groupEnd;
+    }
+  });
+
+  it('fixture use() wrapper: execution.json surfaces the nested body failure (fallback end-to-end)', () => {
+    const title = 'fixture-use-wrapped-body-failure';
+    const entry = getEntry(title);
+    expect(entry.attempts).toHaveLength(1);
+    const attempt = entry.attempts[0];
+    expect(attempt.status).toBe('failed');
+
+    // The fix: the finder's nested fallback descended through the `ok`
+    // use() wrapper(s) into the body scope and wrote the real failure.
+    // Pre-fix this was `null`, which made heal-cli `analyze` throw
+    // `NoFailedAttemptError`.
+    expect(attempt.failingStatement, 'nested fallback must locate the hidden crash').toBeDefined();
+    expect(attempt.failingStatement!.source).toContain('wrapped-expected-value');
+    expect(attempt.failingStatement!.scope).toContain(title);
+    expect(attempt.error).toBeDefined();
   });
 });

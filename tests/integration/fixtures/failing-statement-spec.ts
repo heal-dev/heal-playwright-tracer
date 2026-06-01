@@ -28,7 +28,20 @@
 // attempt is non-passing, which is what makes the reporter run the
 // finder at all.
 
-export const FAILING_STATEMENT_SPEC = `import { test, expect } from '@playwright/test';
+export const FAILING_STATEMENT_SPEC = `import { test as base, expect } from '@playwright/test';
+
+// Extend with a fixture whose \`use()\` wraps the test body (the
+// fixture-use-wrapped-body-failure scenario). Assigned to \`test\` so the
+// scope labeler tags the body \`test: <title>\` — the near-universal
+// \`const test = base.extend(...)\` convention, and exactly how the
+// heal-stories suite that surfaced this bug is written. The first two
+// scenarios don't request \`wrappedValue\`, so the fixture stays lazy for
+// them.
+const test = base.extend<{ wrappedValue: string }>({
+  wrappedValue: async ({}, use) => {
+    await use('wrapped');
+  },
+});
 
 test('caught-throw-then-real-failure', async () => {
   // Source-level try/catch swallows a throw. The tracer records the
@@ -64,5 +77,19 @@ test.describe('hook-scope', () => {
   test('beforeEach-caught-throw-then-body-failure', async () => {
     expect('body-actual').toBe('body-expected');
   });
+});
+
+// Fixture \`use()\` wrapper scenario. The test body runs INSIDE the
+// \`wrappedValue\` fixture's \`await use(...)\`, so the tracer records the
+// whole body as DESCENDANTS of that use() statement. Playwright catches
+// the body's uncaught \`expect\` at the fixture boundary, so
+// \`await use(...)\` resolves \`ok\` and NO root scope-group ends in
+// \`threw\`. The primary (root-only) scan therefore finds nothing — the
+// finder's nested fallback must descend through the \`ok\` wrapper into
+// the body's \`test:\` scope to surface the real failure. Reproduces the
+// heal-stories \`admins can delete secrets\` shape (auth fixture).
+test('fixture-use-wrapped-body-failure', async ({ wrappedValue }) => {
+  void wrappedValue;
+  expect('actual-value').toBe('wrapped-expected-value');
 });
 `;
