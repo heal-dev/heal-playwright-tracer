@@ -5,20 +5,27 @@
  */
 
 // Locates the statement responsible for a test failure inside one
-// `heal-traces.ndjson`. Used by `HealTracerReporter.onTestEnd` to
-// surface a compact `FailingStatement` + `StatementError` on each
-// attempt of the `execution.json` manifest.
+// `heal-traces.ndjson`, used by `HealTracerReporter.onTestEnd`.
 //
-// "Failing statement" = the deepest node in any root `statement`
-// record's children tree whose `status === 'threw'`. Going deepest
-// rather than first-seen surfaces the actual leaf call that threw
-// (e.g. `page.locator(...).click()`) instead of the enclosing user
-// step that propagated the error up.
+// Group root statements by `scope` (test body / beforeEach / afterEach /
+// …). Walk groups in encounter order. The first group whose LAST root
+// is `threw` is where the test crashed — within that root, drill to the
+// deepest `threw` whose ancestor chain is also `threw` (handles helper
+// internal try/catch).
 //
-// Returns null when the file is missing/torn, no statement threw,
-// or the statement that threw has no error attached (defensive — the
-// schema requires `error` on `status === 'threw'` but we tolerate
-// older traces).
+// Why "last in scope": when source has `try { await x(); } catch {}`,
+// the tracer still records `await x()` as `threw` (the throw was
+// emitted before JS routed to the catch), but execution continues and
+// the next root statement runs (`ok`). So a caught-by-source throw
+// always has a following root in the same scope; a real failure halts
+// execution and is the last thing in its scope. Body-vs-afterEach:
+// body crash halts the body scope group; afterEach runs in its own
+// group — first crashing group wins, so body beats afterEach collateral.
+//
+// Limitation: a test scope ending in a source-level `try{}catch{}`
+// with no following code can't be distinguished from a real crash on
+// trace alone. Long-term fix is AST-tagging statements lexically
+// inside try/catch at trace ingest. Rare in practice.
 
 import * as fs from 'fs';
 
@@ -42,7 +49,7 @@ export class FailingStatementFinder {
       return null;
     }
 
-    let deepest: { stmt: Statement; depth: number } | null = null;
+    const roots: Statement[] = [];
     for (const line of body.split('\n')) {
       const trimmed = line.trim();
       if (trimmed.length === 0) continue;
@@ -50,35 +57,54 @@ export class FailingStatementFinder {
       try {
         parsed = JSON.parse(trimmed) as { kind?: unknown; statement?: Statement };
       } catch {
-        // Torn-write tolerance: skip unparseable lines. Mirrors the
-        // discipline of `NdjsonTailInspector`.
+        // Tolerate torn last line (mirrors `NdjsonTailInspector`).
         continue;
       }
       if (parsed?.kind !== 'statement' || !parsed.statement) continue;
-
-      const found = findDeepestThrew(parsed.statement, 0);
-      if (found && (!deepest || found.depth > deepest.depth)) {
-        deepest = found;
-      }
+      roots.push(parsed.statement);
     }
 
-    if (!deepest || !deepest.stmt.error) return null;
+    // Walk consecutive same-scope groups. First group whose last root
+    // is `threw` is the crashing scope.
+    let groupStart = 0;
+    while (groupStart < roots.length) {
+      const groupScope = roots[groupStart].scope;
+      let groupEnd = groupStart + 1;
+      while (groupEnd < roots.length && roots[groupEnd].scope === groupScope) {
+        groupEnd++;
+      }
+      const lastInGroup = roots[groupEnd - 1];
+      if (lastInGroup.status === 'threw') {
+        // Roots have no parent → seed `ancestorChainAllThrew=true`.
+        const found = findDeepestUncaughtThrew(lastInGroup, 0, true);
+        if (found && found.stmt.error) {
+          return {
+            statement: project(found.stmt),
+            error: found.stmt.error,
+          };
+        }
+      }
+      groupStart = groupEnd;
+    }
 
-    return {
-      statement: project(deepest.stmt),
-      error: deepest.stmt.error,
-    };
+    return null;
   }
 }
 
-function findDeepestThrew(
+// Deepest `threw` whose ancestor chain is all `threw`. Children
+// inherit the all-threw chain only if we ourselves threw; if we
+// returned `ok` despite a child throwing, the catch sits in us.
+function findDeepestUncaughtThrew(
   stmt: Statement,
   depth: number,
+  ancestorChainAllThrew: boolean,
 ): { stmt: Statement; depth: number } | null {
-  let best: { stmt: Statement; depth: number } | null =
-    stmt.status === 'threw' ? { stmt, depth } : null;
+  const propagated = stmt.status === 'threw' && ancestorChainAllThrew;
+  let best: { stmt: Statement; depth: number } | null = propagated ? { stmt, depth } : null;
+
+  const childChainAllThrew = ancestorChainAllThrew && stmt.status === 'threw';
   for (const child of stmt.children) {
-    const found = findDeepestThrew(child, depth + 1);
+    const found = findDeepestUncaughtThrew(child, depth + 1, childChainAllThrew);
     if (found && (!best || found.depth > best.depth)) {
       best = found;
     }
