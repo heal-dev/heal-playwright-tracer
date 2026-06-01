@@ -165,6 +165,14 @@ export interface LocalViewerServerOptions {
   hostname?: string;
   log?: (msg: string) => void;
   /**
+   * When true, serve only the `/api/*` routes and return 404 for
+   * everything else — the vendored SPA bundle is not served. Lets an
+   * external frontend (running on its own dev server) consume the REST
+   * API cross-origin without this process also shipping a UI. CORS is
+   * already wide-open, so no extra config is needed on the client.
+   */
+  apiOnly?: boolean;
+  /**
    * When true, every spawned subprocess's stdout/stderr is mirrored to
    * the tracer's own stdout/stderr (in addition to being captured in
    * the per-job buffer that the HTTP API exposes). Useful for
@@ -331,6 +339,12 @@ export class LocalViewerServer {
     const assetMatch = /^\/api\/executions\/([^/]+)\/asset\/([^/]+)\/(\d+)\/(.+)$/.exec(pathname);
     if (assetMatch) {
       await this.serveAsset(res, assetMatch[1], assetMatch[2], assetMatch[3], assetMatch[4]);
+
+      return;
+    }
+
+    if (this.options.apiOnly) {
+      sendText(res, 404, 'Not found (api-only mode)');
 
       return;
     }
