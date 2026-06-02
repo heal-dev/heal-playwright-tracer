@@ -64,6 +64,7 @@ import {
   type ExecutionRecord,
   type ExecutionTestEntry,
   type ExecutionTotals,
+  type FailingStatement,
   type TestStatus,
 } from '../../domain/persistence';
 import { HealTracesLayout, getExecutionIdSource, resolveExecutionId } from '../heal-traces-layout';
@@ -232,6 +233,55 @@ export type ExecutionEndHook = (
   ctx: ExecutionEndContext,
 ) => void | Promise<void>;
 
+/**
+ * Context handed to the `onFailingStatement` hook. Carries the
+ * per-(test, attempt) correlation a downstream needs to route the
+ * record to the right attempt row.
+ */
+export interface FailingStatementContext {
+  /** Per-process executionId at the time the attempt ran. */
+  executionId: string;
+  /** Playwright `TestCase.id` — stable hash of (file, title, project). */
+  playwrightTestId: string;
+  /** 1-indexed attempt number = `TestResult.retry + 1`. */
+  attempt: number;
+}
+
+/**
+ * The per-attempt record carried by the `onFailingStatement` hook.
+ * Ships the RAW `failingStatement` + `error` exactly as computed for
+ * `execution.json` — no pre-formatting. Downstream consumers (the
+ * dedup matcher) decide what counts as the "same error" from these
+ * raw fields, so the wire stays policy-free.
+ */
+export interface FailingStatementRecord {
+  kind: 'failing-statement';
+  failingStatement: FailingStatement;
+  error: StatementError;
+}
+
+/**
+ * Invoked per attempt from `onTestEnd` (inside `captureAttempt`) when
+ * the reporter has located a failing statement for a non-passing
+ * attempt — i.e. exactly when `execution.json` gets a
+ * `failingStatement`. Intended for extensions that ship the
+ * already-computed failure signature to a live destination per
+ * attempt, so a long run surfaces each attempt's failure as it ends
+ * rather than only at run end.
+ *
+ * Does NOT fire for the rescue-only path (error present but no
+ * statement located) — there is no `failingStatement` to ship.
+ *
+ * The hook may return a Promise. Returned promises are tracked and
+ * awaited by `onEnd` so the trailing attempt's ship isn't lost when
+ * Playwright exits. Errors are caught and logged to stderr; a failing
+ * hook never breaks the Playwright run.
+ */
+export type FailingStatementHook = (
+  record: FailingStatementRecord,
+  ctx: FailingStatementContext,
+) => void | Promise<void>;
+
 export interface HealTracerReporterDeps {
   classifier?: CrashErrorClassifier;
   inspector?: NdjsonTailInspector;
@@ -246,6 +296,7 @@ export interface HealTracerReporterDeps {
   onRescue?: RescueHook;
   onAttachmentsWritten?: AttachmentsHook;
   onExecutionEnd?: ExecutionEndHook;
+  onFailingStatement?: FailingStatementHook;
 }
 
 /** Path to the registry file for a given (project, test, attempt). */
@@ -266,10 +317,15 @@ export class HealTracerReporter implements Reporter {
   private readonly onRescue: RescueHook | null;
   private readonly onAttachmentsWritten: AttachmentsHook | null;
   private readonly onExecutionEnd: ExecutionEndHook | null;
+  private readonly onFailingStatement: FailingStatementHook | null;
   // In-flight hook promises — awaited by `onEnd` so the trailing
   // test's hook (which typically POSTs artefacts to a remote
   // destination) has a chance to complete before the process exits.
   private readonly pendingAttachmentsHooks: Promise<void>[] = [];
+  // In-flight `onFailingStatement` hook promises — awaited by `onEnd`
+  // for the same reason: the last attempt's failure ship must land
+  // before the process exits.
+  private readonly pendingFailingStatementHooks: Promise<void>[] = [];
   private readonly stderrByWorker = new Map<number, string[]>();
   private projectOutputDirs: string[] = [];
 
@@ -295,6 +351,7 @@ export class HealTracerReporter implements Reporter {
     this.onRescue = deps.onRescue ?? null;
     this.onAttachmentsWritten = deps.onAttachmentsWritten ?? null;
     this.onExecutionEnd = deps.onExecutionEnd ?? null;
+    this.onFailingStatement = deps.onFailingStatement ?? null;
   }
 
   printsToStdio(): boolean {
@@ -634,6 +691,34 @@ export class HealTracerReporter implements Reporter {
     this.pendingAttachmentsHooks.push(promise);
   }
 
+  private invokeFailingStatementHook(
+    failingStatement: FailingStatement,
+    error: StatementError,
+    test: TestCase,
+    result: TestResult,
+  ): void {
+    if (!this.onFailingStatement) return;
+    const record: FailingStatementRecord = {
+      kind: 'failing-statement',
+      failingStatement,
+      error,
+    };
+    const ctx: FailingStatementContext = {
+      executionId: this.executionId,
+      playwrightTestId: test.id,
+      attempt: result.retry + 1,
+    };
+    // Tracked: `onEnd` awaits these so the trailing attempt's ship
+    // completes before the process exits. Errors swallowed + logged
+    // so a slow or failing hook never blocks the Playwright run.
+    const promise = Promise.resolve()
+      .then(() => this.onFailingStatement!(record, ctx))
+      .catch((err: unknown) => {
+        log.error('onFailingStatement hook failed', err);
+      });
+    this.pendingFailingStatementHooks.push(promise);
+  }
+
   /**
    * Upsert the per-test entry for `test` and append an attempt slice
    * built from `result`. When `ndjsonPath` is non-null and the
@@ -674,6 +759,9 @@ export class HealTracerReporter implements Reporter {
       if (found) {
         attempt.failingStatement = found.statement;
         attempt.error = found.error;
+        // Ship the per-attempt failure signature now (not at run end)
+        // so a long suite surfaces each attempt's failure as it ends.
+        this.invokeFailingStatementHook(found.statement, found.error, test, result);
       } else if (rescuedRecord?.error) {
         attempt.error = rescuedRecord.error;
       }
@@ -750,6 +838,9 @@ export class HealTracerReporter implements Reporter {
     // logged inside the hook wrapper — we just need to wait.
     if (this.pendingAttachmentsHooks.length > 0) {
       await Promise.allSettled(this.pendingAttachmentsHooks);
+    }
+    if (this.pendingFailingStatementHooks.length > 0) {
+      await Promise.allSettled(this.pendingFailingStatementHooks);
     }
 
     if (this.executionId.length === 0) return;
