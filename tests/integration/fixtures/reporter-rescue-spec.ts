@@ -55,4 +55,17 @@ test('playwright-timeout', async () => {
   // t=1500ms; the fixture's \`finally\` picks up the pending root.
   await new Promise(() => {});
 });
+
+test('statement-throw', async () => {
+  // An instrumented statement throws synchronously: status=failed and
+  // — unlike worker-crash — the reporter's locationFinder/
+  // failingStatementFinder LOCATES the failing statement in the
+  // NDJSON. This is the only scenario that takes the \`if (found)\`
+  // branch where \`onFailingStatement\` fires. The located statement +
+  // error are persisted onto the attempt in execution.json, which the
+  // integration test asserts on (the hook ships exactly these fields).
+  const setup = 1;
+  void setup;
+  throw new Error('boom from instrumented statement');
+});
 `;

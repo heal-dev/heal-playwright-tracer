@@ -15,7 +15,13 @@ import {
   healPendingRegistryPath,
   type RescueContext,
   type AttachmentsContext,
+  type FailingStatementRecord,
+  type FailingStatementContext,
+  type FoundFailure,
 } from '../../../src/infrastructure/heal-reporter';
+import type { FailingStatement } from '../../../src/domain/persistence';
+import type { StatementError } from '../../../src/domain/trace-event-recorder/model/statement-trace-schema';
+import { resetExecutionIdForTesting } from '../../../src/infrastructure/heal-traces-layout';
 import type {
   TestAttachmentsRecord,
   TestResultRecord,
@@ -1027,5 +1033,267 @@ describe('HealTracerReporter — onAttachmentsWritten hook', () => {
     await reporter.onEnd?.();
 
     expect(hookResolved).toBe(true);
+  });
+});
+
+describe('HealTracerReporter — onFailingStatement hook', () => {
+  // The ctx.executionId is the reporter's process-level executionId
+  // (resolved in onBegin), NOT the registry's. Pin it via the env var
+  // so the resolver is deterministic.
+  beforeEach(() => {
+    process.env.HEAL_EXECUTION_ID = 'exec-1';
+    // The resolver memoizes; clear it so this env var wins over any
+    // value cached by an earlier test in the same process.
+    resetExecutionIdForTesting();
+  });
+  afterEach(() => {
+    delete process.env.HEAL_EXECUTION_ID;
+    resetExecutionIdForTesting();
+  });
+
+  // A representative raw FailingStatement, shaped exactly as it would
+  // be projected into execution.json. The hook must ship it verbatim.
+  const sampleStatement: FailingStatement = {
+    index: 7,
+    file: 'specs/checkout.spec.ts',
+    line: 42,
+    endLine: 42,
+    source: "await page.getByRole('button', { name: 'Pay' }).click();",
+    scope: 'test',
+    step: 'click Pay',
+    stepPath: ['checkout', 'click Pay'],
+  };
+  const sampleError: StatementError = {
+    name: 'Error',
+    message: 'locator.click: Target closed',
+    stack: 'Error: locator.click: Target closed\n  at ...',
+    isPlaywrightError: true,
+  };
+
+  /**
+   * A stub `failingStatementFinder` that returns `found` for every
+   * `find()` call. Paired with a stub `locationFinder` that always
+   * returns null, this makes the "a statement was located" branch
+   * deterministic regardless of NDJSON content. Pass `found: null` to
+   * reproduce the rescue-only path (error present, no located stmt).
+   */
+  function finders(found: FoundFailure | null) {
+    type Deps = NonNullable<ConstructorParameters<typeof HealTracerReporter>[0]>;
+    return {
+      locationFinder: {
+        find: () => null,
+      } as unknown as Deps['locationFinder'],
+      failingStatementFinder: {
+        find: () => found,
+      } as unknown as Deps['failingStatementFinder'],
+    };
+  }
+
+  it('fires once for a failed attempt with a located statement, shipping the raw record + ctx', async () => {
+    const { ndjsonPath } = setupTest({ testId: 'tid-42' });
+    void ndjsonPath;
+    const calls: Array<{ record: FailingStatementRecord; ctx: FailingStatementContext }> = [];
+
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: (record, ctx) => {
+        calls.push({ record, ctx });
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase({ id: 'tid-42' }),
+      fakeResult({ status: 'failed', duration: 10, retry: 0 }),
+    );
+
+    // Hook fires from a microtask — wait two turns before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].record).toEqual({
+      kind: 'failing-statement',
+      failingStatement: sampleStatement,
+      error: sampleError,
+    });
+    expect(calls[0].ctx).toEqual({
+      executionId: 'exec-1',
+      playwrightTestId: 'tid-42',
+      attempt: 1,
+    });
+  });
+
+  it('fires for a timedOut attempt with a located statement', async () => {
+    setupTest({ testId: 'tid-to' });
+    const calls: Array<{ record: FailingStatementRecord; ctx: FailingStatementContext }> = [];
+
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: (record, ctx) => {
+        calls.push({ record, ctx });
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase({ id: 'tid-to' }),
+      fakeResult({ status: 'timedOut', duration: 30000, retry: 0 }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].record.kind).toBe('failing-statement');
+    expect(calls[0].record.failingStatement).toEqual(sampleStatement);
+    expect(calls[0].ctx).toMatchObject({ playwrightTestId: 'tid-to', attempt: 1 });
+  });
+
+  it('does NOT fire for a passed attempt', async () => {
+    setupTest();
+    let called = false;
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: () => {
+        called = true;
+      },
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'passed', duration: 10 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('does NOT fire for a skipped attempt', async () => {
+    setupTest();
+    let called = false;
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: () => {
+        called = true;
+      },
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'skipped', duration: 0 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('does NOT fire on the rescue-only path: a failed attempt with an error but no located statement', async () => {
+    setupTest();
+    let called = false;
+    // found === null → the `else if (rescuedRecord?.error)` branch
+    // attaches the error but the hook site is skipped entirely.
+    const reporter = newReporter({
+      ...finders(null),
+      onFailingStatement: () => {
+        called = true;
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'failed',
+        duration: 2000,
+        errors: [{ message: 'Worker process exited unexpectedly (code=null signal=SIGKILL)' }],
+      }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('does NOT fire when there is no registry entry / ndjsonPath is null', async () => {
+    // No setupTest() — registry is empty, traceCtx is null, ndjsonPath
+    // is null so `found` is forced to null upstream of the hook site.
+    let called = false;
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: () => {
+        called = true;
+      },
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'failed', duration: 1 }));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(called).toBe(false);
+  });
+
+  it('awaits in-flight hook promises in onEnd so the trailing attempt ship is not lost', async () => {
+    setupTest();
+    let hookResolved = false;
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: () =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            hookResolved = true;
+            resolve();
+          }, 30),
+        ),
+    });
+    reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'failed', duration: 1 }));
+
+    // Without the onEnd await, the hook would still be in-flight here.
+    expect(hookResolved).toBe(false);
+
+    await reporter.onEnd?.();
+
+    expect(hookResolved).toBe(true);
+  });
+
+  it('swallows a rejecting hook (logs, never rethrows) without breaking onTestEnd/onEnd', async () => {
+    setupTest();
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: () => Promise.reject(new Error('collector unreachable')),
+    });
+
+    expect(() =>
+      reporter.onTestEnd(fakeTestCase(), fakeResult({ status: 'failed', duration: 1 })),
+    ).not.toThrow();
+
+    await expect(reporter.onEnd?.()).resolves.not.toThrow();
+
+    const messages = errSpy.mock.calls.map((c: unknown[]) => String(c[0]));
+    errSpy.mockRestore();
+
+    expect(messages.some((m: string) => m.includes('onFailingStatement hook failed'))).toBe(true);
+    expect(messages.some((m: string) => m.includes('collector unreachable'))).toBe(true);
+  });
+
+  it('fires once per attempt across retries, with the correct 1-indexed attempt in ctx', async () => {
+    // Two distinct registry entries for the same testId, one per
+    // attempt — mirrors how retries land on disk.
+    setupTest({ testId: 'retry-id', attempt: 1, slug: 'retry-1' });
+    setupTest({ testId: 'retry-id', attempt: 2, slug: 'retry-2' });
+    const calls: Array<{ record: FailingStatementRecord; ctx: FailingStatementContext }> = [];
+
+    const reporter = newReporter({
+      ...finders({ statement: sampleStatement, error: sampleError }),
+      onFailingStatement: (record, ctx) => {
+        calls.push({ record, ctx });
+      },
+    });
+
+    reporter.onTestEnd(
+      fakeTestCase({ id: 'retry-id' }),
+      fakeResult({ status: 'failed', duration: 10, retry: 0 }),
+    );
+    reporter.onTestEnd(
+      fakeTestCase({ id: 'retry-id' }),
+      fakeResult({ status: 'failed', duration: 10, retry: 1 }),
+    );
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(calls).toHaveLength(2);
+    expect(calls.map((c) => c.ctx.attempt)).toEqual([1, 2]);
+    expect(calls.every((c) => c.ctx.playwrightTestId === 'retry-id')).toBe(true);
+    expect(calls.every((c) => c.record.kind === 'failing-statement')).toBe(true);
   });
 });
