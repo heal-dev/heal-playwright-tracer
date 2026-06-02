@@ -20,13 +20,34 @@
 // scenario would triple the integration suite runtime for no extra
 // signal.
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { beforeAll, describe, it, expect } from 'vitest';
 import { IntegrationSandbox } from '../bootstrap/integration-sandbox';
 import { DiskTraceReader } from '../bootstrap/test-doubles/disk-trace-reader';
 import { REPORTER_RESCUE_SPEC } from '../fixtures/reporter-rescue-spec';
 import { findStatement, type ParsedTrace } from '../fixtures/parsed-trace';
+import type { ExecutionManifest } from '../../../src/domain/persistence';
 
 let traces: Map<string, ParsedTrace>;
+let manifest: ExecutionManifest;
+let sandboxRoot: string;
+
+/**
+ * Walk `<root>/heal-traces/<executionId>/execution.json`. The reporter
+ * writes exactly one per run (single executionId in the sandbox).
+ */
+function readExecutionManifest(root: string): ExecutionManifest {
+  const healTracesDir = path.join(root, 'heal-traces');
+  for (const entry of fs.readdirSync(healTracesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const candidate = path.join(healTracesDir, entry.name, 'execution.json');
+    if (fs.existsSync(candidate)) {
+      return JSON.parse(fs.readFileSync(candidate, 'utf8')) as ExecutionManifest;
+    }
+  }
+  throw new Error('No execution.json found under heal-traces/');
+}
 
 beforeAll(async () => {
   const tarballPath = process.env.INTEGRATION_TARBALL;
@@ -38,15 +59,17 @@ beforeAll(async () => {
   });
   sandbox.scaffold();
   sandbox.install();
-  // Exit code 1 is expected: two of the three scenarios fail on
-  // purpose (worker crash, test timeout). `runPlaywright` already
-  // tolerates that.
+  // Exit code 1 is expected: three of the four scenarios fail on
+  // purpose (worker crash, test timeout, statement throw).
+  // `runPlaywright` already tolerates that.
   await sandbox.runPlaywright();
 
-  traces = new DiskTraceReader().collect(sandbox.getRoot());
+  sandboxRoot = sandbox.getRoot();
+  traces = new DiskTraceReader().collect(sandboxRoot);
   if (traces.size === 0) {
     throw new Error('No traces collected from disk — did the sandbox spec run at all?');
   }
+  manifest = readExecutionManifest(sandboxRoot);
 });
 
 function getTrace(title: string): ParsedTrace {
@@ -125,5 +148,51 @@ describe('integration: HealTracerReporter end-to-end', () => {
     expect(pendingStmt).toBeDefined();
     expect(pendingStmt!.status).toBe('threw');
     expect(pendingStmt!.error?.message).toMatch(/Test timeout of 1500ms exceeded|has been closed/i);
+  });
+
+  // The `onFailingStatement` hook is a constructor dep of
+  // HealTracerReporter. The sandbox registers the reporter by module
+  // path (`@heal-dev/heal-playwright-tracer/reporter`), so Playwright
+  // instantiates it with NO deps — there is no seam to inject a hook
+  // or observe its callback from this (parent) process. So we assert
+  // on the durable on-disk projection the hook is fed from: the
+  // attempt's `failingStatement` + `error` in execution.json. These
+  // are populated in the SAME `if (found)` branch that fires the hook
+  // (`invokeFailingStatementHook(found.statement, found.error, …)`),
+  // so their presence with the right raw fields proves that branch —
+  // and therefore the hook site — was reached for this attempt.
+  it('statement-throw: located failing statement is persisted onto the attempt (hook-fed record)', () => {
+    // The per-test NDJSON shows the statement threw end-to-end.
+    const trace = getTrace('statement-throw');
+    expect(trace.test.status).toBe('failed');
+    const threwStmt = findStatement(trace, (s) => s.source.includes('boom from instrumented'));
+    expect(threwStmt).toBeDefined();
+    expect(threwStmt!.status).toBe('threw');
+
+    // execution.json carries the located failing statement + error on
+    // the attempt — exactly the raw record the onFailingStatement hook
+    // ships (`{ failingStatement, error }`) plus the (test, attempt)
+    // correlation the ctx carries (`playwrightTestId`, `attempt`).
+    const entry = manifest.tests.find((t) => t.title === 'statement-throw');
+    expect(entry).toBeDefined();
+    expect(typeof entry!.playwrightTestId).toBe('string');
+    expect(entry!.playwrightTestId.length).toBeGreaterThan(0);
+
+    const attempt = entry!.attempts.find((a) => a.attempt === 1);
+    expect(attempt).toBeDefined();
+    expect(attempt!.status).toBe('failed');
+
+    // The failingStatement is RAW (index/file/line/source/scope) —
+    // the wire is policy-free, matching the hook record contract.
+    expect(attempt!.failingStatement).toBeDefined();
+    const fs = attempt!.failingStatement!;
+    expect(typeof fs.index).toBe('number');
+    expect(fs.file).toMatch(/scenarios\.spec\.ts$/);
+    expect(typeof fs.line).toBe('number');
+    expect(fs.source).toContain('boom from instrumented statement');
+
+    // The error is the raw StatementError the hook ships alongside.
+    expect(attempt!.error).toBeDefined();
+    expect(attempt!.error!.message).toContain('boom from instrumented statement');
   });
 });
