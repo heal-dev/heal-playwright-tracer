@@ -11,6 +11,7 @@
 // a partial trace, not an error — the worker may have crashed.
 
 import { readFile } from 'node:fs/promises';
+import * as path from 'node:path';
 
 import type {
   Statement,
@@ -18,9 +19,19 @@ import type {
   TestAttachmentsRecord,
   TestHeader,
   TestResultRecord,
-  TestSourceFile,
-  TestSourceRecord,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
+
+export interface TraceSourceFile {
+  /**
+   * Source-file path RELATIVE to the repo root (`rootDir`), forward
+   * slashes. The content lives in the live working tree at
+   * `<rootDir>/<path>` and is streamed by the viewer's source endpoint
+   * — the tracer does NOT copy source into the trace dir.
+   */
+  path: string;
+  /** True for the spec file itself (the test header's file). */
+  entry?: boolean;
+}
 
 export interface TraceModel {
   header: TestHeader;
@@ -34,13 +45,12 @@ export interface TraceModel {
    */
   attachments: TestAttachment[];
   /**
-   * Source-file manifest captured by the fixture when
-   * `configureTracer({ source: { enabled: true } })` opts in. Empty
-   * otherwise. Each entry's `path` is relative to the per-test
-   * directory; the file's content lives at `<testDir>/<path>` (under
-   * `sources/`) and is served by the viewer via the source endpoint.
+   * Distinct in-repo source files referenced by the trace — the spec
+   * file plus every file that produced an executed statement. Derived
+   * from the statement stream (there is no manifest record); the
+   * viewer reads each file's content live from the working tree.
    */
-  source: TestSourceFile[];
+  source: TraceSourceFile[];
 }
 
 interface RawHeaderRecord {
@@ -57,7 +67,6 @@ type AnyRecord =
   | RawStatementRecord
   | TestResultRecord
   | TestAttachmentsRecord
-  | TestSourceRecord
   | { kind: string };
 
 const parseLine = (line: string, lineNumber: number): AnyRecord | null => {
@@ -78,7 +87,6 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
   const statements: Statement[] = [];
   let result: TestResultRecord | undefined;
   let attachments: TestAttachment[] = [];
-  let source: TestSourceFile[] = [];
 
   for (let i = 0; i < lines.length; i += 1) {
     const trimmed = lines[i].trim();
@@ -102,9 +110,6 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
       case 'test-attachments':
         attachments = (record as TestAttachmentsRecord).attachments;
         break;
-      case 'test-source':
-        source = (record as TestSourceRecord).files;
-        break;
       default:
         // Forward-compatible: unknown kinds are dropped silently.
         break;
@@ -115,7 +120,44 @@ export const loadTrace = async (ndjsonPath: string): Promise<TraceModel> => {
     throw new Error(`No test-header record found in ${ndjsonPath}`);
   }
 
+  const source = deriveSource(header, statements);
+
   return { header, statements, attachments, source, ...(result ? { result } : {}) };
+};
+
+/**
+ * Derive the trace's source-file list from the statement stream. Each
+ * `statement.file` is already repo-root-relative; the header's spec
+ * file is absolute, so we relativize it against the recorded
+ * `env.cwd` to flag the entry and list it first. Walks the statement
+ * tree (nested calls live in `children`).
+ */
+const deriveSource = (header: TestHeader, statements: Statement[]): TraceSourceFile[] => {
+  const seen = new Set<string>();
+  const ordered: string[] = [];
+  const visit = (stmt: Statement): void => {
+    if (stmt.file && !seen.has(stmt.file)) {
+      seen.add(stmt.file);
+      ordered.push(stmt.file);
+    }
+    stmt.children.forEach(visit);
+  };
+  statements.forEach(visit);
+
+  const entryRel =
+    header.env.cwd && path.isAbsolute(header.file)
+      ? path.relative(header.env.cwd, header.file).split(path.sep).join('/')
+      : header.file;
+
+  // Spec file first (even if it produced no statements), then every
+  // other referenced file in first-executed order.
+  const files: string[] = [];
+  if (entryRel) files.push(entryRel);
+  for (const f of ordered) {
+    if (f !== entryRel) files.push(f);
+  }
+
+  return files.map((p) => (p === entryRel ? { path: p, entry: true } : { path: p }));
 };
 
 /**

@@ -275,35 +275,6 @@ export interface HealTracerConsoleConfig {
 }
 
 /**
- * Tunables for the test's source-file manifest capture. OFF by
- * default — copying user source into the trace artifact is a
- * deliberate opt-in (size + privacy). Pass `enabled: true` to capture
- * the spec file plus its transitive import graph (user files only;
- * `node_modules` and out-of-root files are always excluded).
- *
- * Captured files land on disk under the per-test `sources/` directory
- * and are referenced by a `test-source` manifest record in
- * `heal-traces.ndjson`. See `TestSourceRecord` in
- * `statement-trace-schema.ts` for the wire format.
- */
-export interface HealTracerSourceConfig {
-  /** Pass `true` to enable the capture. Defaults to `false`. */
-  enabled?: boolean;
-  /**
-   * Hard cap on the number of files captured (graph traversal stops
-   * once this many distinct files have been resolved). Default: 200.
-   */
-  maxFiles?: number;
-  /**
-   * Per-file size cap in bytes. Files larger than this are not copied
-   * to disk; the manifest still records them with `truncated: true`
-   * and `bytes` set so inventory remains complete. Default: 524288
-   * (512 KB).
-   */
-  maxFileBytes?: number;
-}
-
-/**
  * Shape of the object passed to `configureTracer(...)`. All fields
  * are optional — an empty config yields the default behaviour
  * (statement-stream NDJSON + network and console sidecars, no
@@ -323,5 +294,4 @@ export interface HealTracerConfig {
   timeouts?: HealTracerTimeouts;
   network?: HealTracerNetworkConfig;
   console?: HealTracerConsoleConfig;
-  source?: HealTracerSourceConfig;
 }

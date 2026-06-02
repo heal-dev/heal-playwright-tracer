@@ -659,13 +659,19 @@ export class LocalViewerServer {
       contentType: a.contentType,
     }));
     const source: SourceRef[] = trace.source.map((f) => {
+      let bytes = 0;
+      try {
+        bytes = statSync(path.join(this.options.rootDir, f.path)).size;
+      } catch {
+        // File moved/deleted since the run — keep it listed (the
+        // source endpoint will 404 on fetch); size is unknown.
+      }
       const ref: SourceRef = {
         url: `${baseSourceUrl}/${encodePath(f.path)}`,
         path: f.path,
-        bytes: f.bytes,
+        bytes,
       };
       if (f.entry) ref.entry = true;
-      if (f.truncated) ref.truncated = true;
       return ref;
     });
     const response: TraceResponse = {
@@ -754,21 +760,37 @@ export class LocalViewerServer {
       return;
     }
 
+    // Source is read LIVE from the working tree — the tracer no longer
+    // copies it into the trace dir. Two guards keep this safe despite
+    // the permissive CORS policy: the resolved path must stay within
+    // the repo root, AND it must be a file the trace actually
+    // references. The second guard means a hostile page that reached
+    // this localhost endpoint still can't read arbitrary repo files
+    // (e.g. `.env`) — only the spec and the files it executed.
+    const rootDir = path.resolve(this.options.rootDir);
+    const filePath = path.resolve(path.join(rootDir, rawFile));
+    if (filePath !== rootDir && !filePath.startsWith(rootDir + path.sep)) {
+      sendText(res, 400, 'Path traversal rejected');
+
+      return;
+    }
+
     const layout = new HealTracesLayout(this.options.rootDir, rawExecutionId);
-    let filePath: string;
+    let referenced = false;
     try {
-      filePath = layout.sourcePath(rawTestId, attempt, rawFile);
+      const trace = await loadTrace(layout.ndjsonPath(rawTestId, attempt));
+      referenced = trace.source.some((f) => f.path === rawFile);
     } catch {
-      sendText(res, 400, 'Path traversal rejected');
+      sendText(res, 404, 'Not found');
 
       return;
     }
-    const sourcesDir = path.resolve(layout.sourcesDir(rawTestId, attempt));
-    if (filePath !== sourcesDir && !filePath.startsWith(sourcesDir + path.sep)) {
-      sendText(res, 400, 'Path traversal rejected');
+    if (!referenced) {
+      sendText(res, 404, 'Not found');
 
       return;
     }
+
     try {
       await stat(filePath);
     } catch {
