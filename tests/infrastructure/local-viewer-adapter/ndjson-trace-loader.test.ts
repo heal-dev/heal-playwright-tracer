@@ -107,34 +107,41 @@ describe('loadTrace', () => {
     expect(trace.statements).toHaveLength(1);
   });
 
-  it('parses a test-source record into trace.source', async () => {
-    const file = await writeNdjson([
-      HEADER,
-      STMT(1),
-      {
-        kind: 'test-source',
-        files: [
-          { path: 'sources/tests/a.spec.ts', bytes: 100, entry: true },
-          { path: 'sources/pages/login.ts', bytes: 250 },
-          { path: 'sources/pages/huge.ts', bytes: 999999, truncated: true },
-        ],
+  it('derives trace.source from statement files, spec file first and flagged entry', async () => {
+    // HEADER.file is relative and env.cwd is unset, so it is the entry
+    // path verbatim. A nested child runs in a helper file.
+    const withChild = {
+      kind: 'statement',
+      statement: {
+        ...STMT(1).statement,
+        file: 'a.spec.ts',
+        children: [{ ...STMT(2).statement, file: 'pages/login.ts', children: [] }],
       },
-      RESULT,
-    ]);
+    };
+    const file = await writeNdjson([HEADER, withChild, RESULT]);
     const trace = await loadTrace(file);
-    expect(trace.source).toHaveLength(3);
-    expect(trace.source[0]).toMatchObject({
-      path: 'sources/tests/a.spec.ts',
-      bytes: 100,
-      entry: true,
-    });
-    expect(trace.source[2]).toMatchObject({ truncated: true });
+    expect(trace.source).toEqual([{ path: 'a.spec.ts', entry: true }, { path: 'pages/login.ts' }]);
   });
 
-  it('defaults trace.source to an empty array when no test-source record is present', async () => {
-    const file = await writeNdjson([HEADER, STMT(1), RESULT]);
+  it('relativizes an absolute spec file against env.cwd to flag the entry', async () => {
+    const header = {
+      ...HEADER,
+      test: { ...HEADER.test, file: '/repo/tests/a.spec.ts', env: { cwd: '/repo' } },
+    };
+    const stmt = {
+      kind: 'statement',
+      statement: { ...STMT(1).statement, file: 'tests/a.spec.ts' },
+    };
+    const file = await writeNdjson([header, stmt, RESULT]);
     const trace = await loadTrace(file);
-    expect(trace.source).toEqual([]);
+    expect(trace.source).toEqual([{ path: 'tests/a.spec.ts', entry: true }]);
+  });
+
+  it('lists the spec file first even when no statement references it', async () => {
+    const stmt = { kind: 'statement', statement: { ...STMT(1).statement, file: 'pages/login.ts' } };
+    const file = await writeNdjson([HEADER, stmt, RESULT]);
+    const trace = await loadTrace(file);
+    expect(trace.source).toEqual([{ path: 'a.spec.ts', entry: true }, { path: 'pages/login.ts' }]);
   });
 });
 

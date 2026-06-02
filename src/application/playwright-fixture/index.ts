@@ -72,7 +72,6 @@ import { ConsoleCaptureSession } from '../../infrastructure/playwright-console-c
 import { NetworkCaptureSession } from '../../infrastructure/playwright-network-capture-adapter';
 import { HealTracesLayout, resolveExecutionId } from '../../infrastructure/heal-traces-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
-import { captureTestSources } from '../../infrastructure/test-source-capture-adapter';
 import {
   healPendingRegistryPath,
   type HealTraceContext,
@@ -449,33 +448,6 @@ export const test = base.extend<TraceFixtures>({
             await withTimeout(networkSession.stop(failed), lifecycleTimeoutMs, 'network.stop');
           } catch (err) {
             log.error('network.stop did not finish', err);
-          }
-        }
-
-        // Optional source-file capture. Off by default — when the user
-        // opts in via `configureTracer({ source: { enabled: true } })`,
-        // we resolve the spec's transitive import graph (relative
-        // imports + tsconfig path aliases, excluding `node_modules`
-        // and out-of-root files), copy each file under `sources/`,
-        // and emit a `test-source` manifest record. Whole thing is
-        // best-effort and wrapped in try/catch — a resolve, read, or
-        // write failure must never fail the test.
-        //
-        // Sits BEFORE `projector.finalize()` so the manifest record
-        // is appended ahead of `test-result` and before the exporter
-        // is closed. The graph is memoized per spec file in the
-        // capture module, so retries and sibling tests don't re-walk.
-        if (tracerConfig.source?.enabled) {
-          try {
-            captureTestSources({
-              entryFile: testInfo.file,
-              rootDir: process.cwd(),
-              sourcesDir: layout.sourcesDir(captured.testId, captured.attempt),
-              exporter: output,
-              config: tracerConfig.source,
-            });
-          } catch (err) {
-            log.error('source-capture failed', err);
           }
         }
 

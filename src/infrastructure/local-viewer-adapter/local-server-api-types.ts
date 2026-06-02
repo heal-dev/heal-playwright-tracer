@@ -31,7 +31,6 @@ import type {
   TestEnv,
   TestHeader,
   TestResultRecord,
-  TestSourceFile,
 } from '../../domain/trace-event-recorder/model/statement-trace-schema';
 
 export type {
@@ -43,7 +42,6 @@ export type {
   TestEnv,
   TestHeader,
   TestResultRecord,
-  TestSourceFile,
   TestStatus,
 };
 
@@ -141,20 +139,19 @@ export interface AttachmentRef {
 }
 
 /**
- * Wire-side source-file reference. Carries the manifest fields from
- * `TestSourceFile` plus an absolute `url` the SPA can fetch to read
- * the file's full content. The server resolves URLs against the
- * `/api/executions/:executionId/source/:testId/:attempt/...` endpoint;
- * `truncated: true` entries point at a non-existent file (the capture
- * step skipped copy due to size) and the fetch will 404 — clients
- * should branch on the flag before fetching.
+ * Wire-side source-file reference. The server derives these from the
+ * trace's statement stream and stamps an absolute `url` the SPA can
+ * fetch to read the file's full content; the server resolves that URL
+ * against the `/api/executions/:executionId/source/:testId/:attempt/...`
+ * endpoint, which streams the file LIVE from the working tree.
+ * `bytes` is the live file's size, or 0 if it has since moved/been
+ * deleted (the fetch then 404s).
  */
 export interface SourceRef {
   url: string;
   path: string;
   bytes: number;
   entry?: boolean;
-  truncated?: boolean;
 }
 
 export interface TraceResponse {
@@ -169,10 +166,10 @@ export interface TraceResponse {
   result?: TestResultRecord;
   attachments: AttachmentRef[];
   /**
-   * Source-file manifest entries for the test — the spec file plus
-   * every user file it transitively imports. Empty when source
-   * capture was not enabled at run time. Each `url` resolves to the
-   * file's full content via the source endpoint.
+   * Source files referenced by the test — the spec file plus every
+   * in-repo file that produced an executed statement, derived from
+   * the statement stream. Each `url` resolves to the file's full
+   * content (read live from the working tree) via the source endpoint.
    */
   source: SourceRef[];
 }

@@ -30,23 +30,43 @@ const HEADER = {
     context: { testId: TID, attempt: ATTEMPT, executionId: EXEC },
   },
 };
+// Root statement is in the spec file; its child runs in the imported
+// `pages/login.ts` helper — so the derived `source[]` lists both, with
+// the spec flagged as entry.
 const STMT_WITH_SCREENSHOT = {
   kind: 'statement',
   statement: {
     seq: 1,
-    file: 'a.spec.ts',
-    line: 1,
-    endLine: 1,
+    file: 'tests/auth.spec.ts',
+    line: 2,
+    endLine: 2,
     kind: 'ExpressionStatement',
     scope: 'test',
-    source: 'page.click()',
+    source: 'login()',
     hasAwait: true,
     step: null,
     stepPath: null,
     status: 'ok',
     duration: 5,
     t: 5,
-    children: [] as unknown[],
+    children: [
+      {
+        seq: 2,
+        file: 'pages/login.ts',
+        line: 1,
+        endLine: 1,
+        kind: 'CallExpression',
+        scope: 'login',
+        source: 'export const login = () => {}',
+        hasAwait: false,
+        step: null,
+        stepPath: null,
+        status: 'ok',
+        duration: 1,
+        t: 6,
+        children: [] as unknown[],
+      },
+    ] as unknown[],
     screenshot: 'stmt-0001.png',
   },
 };
@@ -56,14 +76,6 @@ const ATTACHMENTS = {
   attachments: [
     { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
     { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
-  ],
-};
-const SOURCE_RECORD = {
-  kind: 'test-source',
-  files: [
-    { path: 'tests/auth.spec.ts', bytes: 42, entry: true },
-    { path: 'pages/login.ts', bytes: 17 },
-    { path: 'pages/huge.ts', bytes: 9_999_999, truncated: true },
   ],
 };
 const EXECUTION_RECORD = {
@@ -99,23 +111,26 @@ beforeAll(async () => {
   const testDir = path.join(root, 'heal-traces', EXEC, TID, String(ATTEMPT));
   await mkdir(path.join(testDir, 'screenshots'), { recursive: true });
   await mkdir(path.join(testDir, 'videos'), { recursive: true });
-  await mkdir(path.join(testDir, 'sources', 'tests'), { recursive: true });
-  await mkdir(path.join(testDir, 'sources', 'pages'), { recursive: true });
+
+  // Source files live in the working tree (rootDir), NOT in the trace
+  // dir — the viewer reads them live. `.env` exists in root but is not
+  // referenced by the trace; the source endpoint must refuse to serve it.
+  await mkdir(path.join(root, 'tests'), { recursive: true });
+  await mkdir(path.join(root, 'pages'), { recursive: true });
   await writeFile(
-    path.join(testDir, 'sources', 'tests', 'auth.spec.ts'),
+    path.join(root, 'tests', 'auth.spec.ts'),
     "import { login } from '../pages/login';\nlogin();\n",
     'utf-8',
   );
   await writeFile(
-    path.join(testDir, 'sources', 'pages', 'login.ts'),
+    path.join(root, 'pages', 'login.ts'),
     'export const login = () => {};\n',
     'utf-8',
   );
+  await writeFile(path.join(root, '.env'), 'SECRET=hunter2\n', 'utf-8');
   await writeFile(
     path.join(testDir, 'heal-traces.ndjson'),
-    [HEADER, STMT_WITH_SCREENSHOT, SOURCE_RECORD, RESULT, ATTACHMENTS]
-      .map((l) => JSON.stringify(l))
-      .join('\n'),
+    [HEADER, STMT_WITH_SCREENSHOT, RESULT, ATTACHMENTS].map((l) => JSON.stringify(l)).join('\n'),
     'utf-8',
   );
   await writeFile(
@@ -259,20 +274,23 @@ describe('LocalViewerServer', () => {
 
   // --- /source/... endpoint --------------------------------------------
 
-  it('GET /api/.../tests/:tid/:attempt carries a source[] with URLs and flags', async () => {
+  it('GET /api/.../tests/:tid/:attempt derives source[] from statements, spec first', async () => {
     const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
     const trace = (await res.json()) as {
-      source: { url: string; path: string; bytes: number; entry?: boolean; truncated?: boolean }[];
+      source: { url: string; path: string; bytes: number; entry?: boolean }[];
     };
-    expect(trace.source).toHaveLength(3);
-    const spec = trace.source.find((s) => s.path === 'tests/auth.spec.ts');
-    expect(spec?.entry).toBe(true);
-    expect(spec?.url).toBe(`/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/tests/auth.spec.ts`);
-    const huge = trace.source.find((s) => s.path === 'pages/huge.ts');
-    expect(huge?.truncated).toBe(true);
+    expect(trace.source).toHaveLength(2);
+    const spec = trace.source[0];
+    expect(spec.path).toBe('tests/auth.spec.ts');
+    expect(spec.entry).toBe(true);
+    expect(spec.url).toBe(`/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/tests/auth.spec.ts`);
+    // bytes are the LIVE file's size, stat'd from the working tree.
+    expect(spec.bytes).toBeGreaterThan(0);
+    const login = trace.source.find((s) => s.path === 'pages/login.ts');
+    expect(login?.entry).toBeUndefined();
   });
 
-  it('GET /api/.../source/:tid/:attempt/<path> streams the source file content', async () => {
+  it('GET /api/.../source/:tid/:attempt/<path> streams the live spec file', async () => {
     const res = await fetch(
       `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/tests/auth.spec.ts`,
     );
@@ -281,7 +299,7 @@ describe('LocalViewerServer', () => {
     expect(body).toContain("import { login } from '../pages/login'");
   });
 
-  it('GET source for a nested file resolves under sources/', async () => {
+  it('GET source for a nested referenced file streams it from the working tree', async () => {
     const res = await fetch(
       `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/pages/login.ts`,
     );
@@ -289,10 +307,10 @@ describe('LocalViewerServer', () => {
     expect(await res.text()).toContain('export const login');
   });
 
-  it('GET source for a truncated (uncopied) entry returns 404', async () => {
-    const res = await fetch(
-      `${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/pages/huge.ts`,
-    );
+  it('refuses to serve a repo file the trace does not reference (e.g. .env)', async () => {
+    // `.env` exists under rootDir but no statement references it — the
+    // membership guard must 404 it despite the permissive CORS policy.
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/source/${TID}/${ATTEMPT}/.env`);
     expect(res.status).toBe(404);
   });
 
