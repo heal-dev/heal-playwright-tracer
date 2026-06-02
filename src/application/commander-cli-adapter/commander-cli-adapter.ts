@@ -75,7 +75,18 @@ export class CommanderCliAdapter {
         'Mirror spawned subprocess output (e.g. `heal analyze`, `heal login`) ' +
           'to the tracer console. Useful for debugging viewer-triggered runs.',
       )
-      .action(async (opts: { verbose?: boolean }) => {
+      .option(
+        '--port <port>',
+        'Bind a fixed port instead of an OS-assigned ephemeral one. Use this ' +
+          'when an external frontend needs a stable URL to fetch the API. ' +
+          'Falls back to the HEAL_TRACER_PORT env var.',
+      )
+      .option(
+        '--api-only',
+        'Serve only the /api/* routes (no SPA bundle, no browser auto-open). ' +
+          'For driving the REST API from a separate frontend dev server.',
+      )
+      .action(async (opts: { verbose?: boolean; port?: string; apiOnly?: boolean }) => {
         await this.handleView(opts);
       });
   }
@@ -84,11 +95,36 @@ export class CommanderCliAdapter {
     (this.options.log ?? console.log.bind(console))(msg);
   }
 
-  private async handleView(opts: { verbose?: boolean }): Promise<void> {
+  private parsePort(raw: string | undefined, source: string): number | undefined {
+    if (raw === undefined || raw === '') return undefined;
+    const n = Number.parseInt(raw, 10);
+    if (!/^\d+$/.test(raw) || n < 0 || n > 65535) {
+      console.error(`[heal-tracer] invalid ${source} "${raw}" (expected 0–65535)`);
+      process.exit(1);
+    }
+    return n;
+  }
+
+  private async handleView(opts: {
+    verbose?: boolean;
+    port?: string;
+    apiOnly?: boolean;
+  }): Promise<void> {
     const rootDir = process.cwd();
 
+    // Precedence: --port flag wins, else HEAL_TRACER_PORT env, else random.
+    // No dotenv here — but a value placed in a `.env` file works as long as
+    // it reaches the process env (e.g. `node --env-file=.env`, direnv, or
+    // your shell), matching how the other HEAL_* vars are consumed.
+    const requestedPort = this.parsePort(
+      opts.port ?? process.env.HEAL_TRACER_PORT,
+      opts.port ? '--port' : 'HEAL_TRACER_PORT',
+    );
+
     const bundleDir = this.options.bundleDir ?? defaultBundleDir();
-    if (!existsSync(path.join(bundleDir, 'index.html'))) {
+    // The bundle is only consumed by the SPA static handler; in
+    // api-only mode there's nothing to serve from it, so skip the check.
+    if (!opts.apiOnly && !existsSync(path.join(bundleDir, 'index.html'))) {
       console.error(
         `[heal-tracer] viewer bundle not found at ${bundleDir}.\n` +
           `Reinstall @heal-dev/heal-playwright-tracer.`,
@@ -99,9 +135,10 @@ export class CommanderCliAdapter {
     const server = new LocalViewerServer({
       rootDir,
       bundleDir,
-      port: RANDOM_PORT,
+      port: requestedPort ?? RANDOM_PORT,
       log: (m) => this.log(m),
       verbose: opts.verbose,
+      apiOnly: opts.apiOnly,
     });
 
     await server.start();
@@ -111,10 +148,17 @@ export class CommanderCliAdapter {
       process.exit(1);
     }
     const url = `http://localhost:${String(port)}`;
-    this.log(`✓ heal-tracer viewer running at ${url}`);
+    if (opts.apiOnly) {
+      this.log(`✓ heal-tracer API running at ${url}/api`);
+    } else {
+      this.log(`✓ heal-tracer viewer running at ${url}`);
+    }
     this.log(`  scanning: ${rootDir} (recursive)`);
 
-    openInBrowser(url);
+    // No UI to open in api-only mode — the external frontend is the client.
+    if (!opts.apiOnly) {
+      openInBrowser(url);
+    }
 
     this.log('Press Ctrl+C to stop.');
 
