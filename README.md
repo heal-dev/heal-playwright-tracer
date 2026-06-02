@@ -151,6 +151,28 @@ header dropdown (newest first), and opens the latest one in your
 default browser. Switch executions from the dropdown to inspect
 history. Press Ctrl+C to stop.
 
+#### Options
+
+| Flag            | Description                                                                                                                                                   |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--port <port>` | Bind a fixed port instead of an OS-assigned ephemeral one. Useful when an external frontend needs a stable URL. Falls back to the `HEAL_TRACER_PORT` env var. |
+| `--api-only`    | Serve only the `/api/*` routes — no SPA bundle, no browser auto-open. For driving the REST API from a separate frontend dev server.                           |
+| `--verbose`     | Mirror spawned subprocess output (`heal analyze`, `heal login`) to the tracer console.                                                                        |
+
+To consume the REST API from your own frontend during development,
+run the server on a fixed port without the bundled UI:
+
+```sh
+npx heal-tracer view --api-only --port 3001
+# or, via env (e.g. from a .env loaded with `node --env-file`, direnv, or your shell):
+HEAL_TRACER_PORT=3001 npx heal-tracer view --api-only
+```
+
+CORS is wide-open (`Access-Control-Allow-Origin: *`), so a frontend
+on its own dev server can `fetch('http://localhost:3001/api/executions')`
+cross-origin with no extra setup. The API is unauthenticated and
+`localhost`-bound by design — don't expose it on a public interface.
+
 ### Claude Skill
 
 See [this Claude skill](docs/SKILL.md) for a starter.
