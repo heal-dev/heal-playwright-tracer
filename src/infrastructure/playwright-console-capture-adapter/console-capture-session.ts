@@ -38,6 +38,12 @@ import { withTimeout } from '../../util/with-timeout';
 const ARG_RESOLVE_TIMEOUT_MS = 250;
 const DEFAULT_MAX_ARG_BYTES = 4096;
 const DEFAULT_MAX_ARGS_PER_EVENT = 10;
+// Bounds on the shape of a single resolved arg. `maxArgBytes` only
+// caps strings; these cap how deep/wide we walk an object graph so a
+// huge framework object (Angular component, zone.js task, …) cannot
+// blow up the NDJSON line.
+const MAX_ARG_DEPTH = 6;
+const MAX_ARG_ENTRIES = 100;
 
 const ALLOWED_LEVELS: readonly ConsoleLevel[] = [
   'log',
@@ -182,8 +188,15 @@ export class ConsoleCaptureSession {
 
   private write(record: ConsoleRecord): void {
     if (this.closed) return;
-    if (this.fd === undefined) this.fd = fs.openSync(this.ndjsonPath, 'a');
-    fs.writeSync(this.fd, JSON.stringify(record) + '\n');
+    const line = serializeRecord(record);
+    if (line === undefined) return; // nothing we could serialize — never throw.
+    try {
+      if (this.fd === undefined) this.fd = fs.openSync(this.ndjsonPath, 'a');
+      fs.writeSync(this.fd, line + '\n');
+    } catch {
+      // Sidecar I/O must never throw into the page 'console'/'pageerror'
+      // handler (which is un-awaited) and fail the user's test.
+    }
   }
 
   close(): Promise<void> {
@@ -218,13 +231,122 @@ function mapConsoleType(type: string): ConsoleLevel {
 }
 
 /**
- * Defensive cap on arg payload size — strings that exceed the byte
- * budget are sliced to `maxArgBytes` UTF-8 characters; non-string
- * values pass through unchanged (they will be re-encoded by the
- * NDJSON `JSON.stringify` and the natural JSON size is acceptable).
+ * Normalize a resolved console arg into a JSON-safe value.
+ *
+ * Playwright's `JSHandle.jsonValue()` faithfully rebuilds circular
+ * structures into genuinely circular JS objects (see
+ * `parseEvaluationResultValue` in playwright-core's
+ * `utilityScriptSerializers`), and a framework object can be huge.
+ * Passing such a value straight through would make the NDJSON
+ * `JSON.stringify` in `write()` throw `Converting circular structure
+ * to JSON`. So we walk the graph here:
+ *   - cycles are replaced with `'[Circular]'` (ancestor tracking, so
+ *     shared-but-acyclic siblings are kept, matching JSON behaviour),
+ *   - depth past `MAX_ARG_DEPTH` and entries past `MAX_ARG_ENTRIES`
+ *     are collapsed to a marker,
+ *   - strings are capped to `maxArgBytes`,
+ *   - `bigint`/`function`/`symbol` (which `JSON.stringify` drops or
+ *     throws on) become readable strings.
  */
 function capArg(value: unknown, maxArgBytes: number): unknown {
-  if (typeof value !== 'string') return value;
+  return sanitizeArg(value, maxArgBytes, new WeakSet<object>(), 0);
+}
+
+function sanitizeArg(
+  value: unknown,
+  maxArgBytes: number,
+  seen: WeakSet<object>,
+  depth: number,
+): unknown {
+  switch (typeof value) {
+    case 'string':
+      return capString(value, maxArgBytes);
+    case 'number':
+      return Number.isFinite(value) ? value : String(value);
+    case 'boolean':
+    case 'undefined':
+      return value;
+    case 'bigint':
+      return `${value}n`;
+    case 'function':
+      return value.name ? `[Function: ${value.name}]` : '[Function]';
+    case 'symbol':
+      return value.toString();
+  }
+  if (value === null) return null;
+
+  const obj = value as object;
+  if (seen.has(obj)) return '[Circular]';
+
+  // Types with a `toJSON` (Date, URL, …) are delegated to it so we
+  // reproduce the native `JSON.stringify` output instead of flattening
+  // them to `{}` by walking their (empty) own enumerable keys.
+  const toJSON = (obj as { toJSON?: unknown }).toJSON;
+  if (typeof toJSON === 'function') {
+    try {
+      return sanitizeArg((toJSON as () => unknown).call(obj), maxArgBytes, seen, depth);
+    } catch {
+      return '<unserializable>';
+    }
+  }
+
+  if (depth >= MAX_ARG_DEPTH) return Array.isArray(obj) ? '[Array]' : '[Object]';
+
+  seen.add(obj);
+  try {
+    if (Array.isArray(obj)) {
+      const limit = Math.min(obj.length, MAX_ARG_ENTRIES);
+      const out: unknown[] = [];
+      for (let i = 0; i < limit; i++) {
+        out.push(sanitizeArg(obj[i], maxArgBytes, seen, depth + 1));
+      }
+      if (obj.length > MAX_ARG_ENTRIES) out.push(`[+${obj.length - MAX_ARG_ENTRIES} more]`);
+      return out;
+    }
+    const keys = Object.keys(obj);
+    const out: Record<string, unknown> = {};
+    const limit = Math.min(keys.length, MAX_ARG_ENTRIES);
+    for (let i = 0; i < limit; i++) {
+      const key = keys[i];
+      let propValue: unknown;
+      try {
+        propValue = (obj as Record<string, unknown>)[key];
+      } catch {
+        propValue = '<unserializable>'; // a throwing getter
+      }
+      out[key] = sanitizeArg(propValue, maxArgBytes, seen, depth + 1);
+    }
+    if (keys.length > MAX_ARG_ENTRIES) out['…'] = `[+${keys.length - MAX_ARG_ENTRIES} more]`;
+    return out;
+  } finally {
+    seen.delete(obj);
+  }
+}
+
+function capString(value: string, maxArgBytes: number): string {
   if (Buffer.byteLength(value, 'utf8') <= maxArgBytes) return value;
   return value.slice(0, maxArgBytes) + '…';
+}
+
+/**
+ * Backstop serializer for the NDJSON line. Arg sanitization should
+ * already have made `record` JSON-safe, but if anything slips through
+ * (a value `JSON.stringify` still rejects), drop `args` — the only
+ * field that can hold an arbitrary value — and keep the rest of the
+ * record (`text`, `level`, `location`, correlation). Returns
+ * `undefined` only if even the stripped record fails, so the caller
+ * can skip the write rather than throw.
+ */
+function serializeRecord(record: ConsoleRecord): string | undefined {
+  try {
+    return JSON.stringify(record);
+  } catch {
+    try {
+      const rest = { ...record };
+      delete (rest as { args?: unknown }).args;
+      return JSON.stringify(rest);
+    } catch {
+      return undefined;
+    }
+  }
 }

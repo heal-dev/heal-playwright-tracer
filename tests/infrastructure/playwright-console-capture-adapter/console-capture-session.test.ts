@@ -192,6 +192,70 @@ describe('ConsoleCaptureSession', () => {
     expect(record.args).toEqual(['hello', 42, { nested: true }]);
   });
 
+  it('does not crash on a circular console arg and keeps the rest of the record', async () => {
+    // Playwright's jsonValue() rebuilds cycles into a genuinely
+    // circular JS object, which would make the NDJSON JSON.stringify
+    // throw — as an unhandled rejection out of the un-awaited
+    // page.on('console') handler — and fail the user's test.
+    const rejections: unknown[] = [];
+    const onRejection = (e: unknown) => rejections.push(e);
+    process.on('unhandledRejection', onRejection);
+
+    const session = new ConsoleCaptureSession(ndjsonPath, deps, { enabled: true });
+    const { page, emitter: pageEmitter } = makePage();
+    const { ctx } = makeContext([page]);
+    session.attachToContext(ctx);
+
+    const circular: Record<string, unknown> = { name: 'zone' };
+    circular.self = circular;
+    pageEmitter.emit('console', makeMessage({ type: 'log', text: 'circular', args: [circular] }));
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    await session.close();
+
+    process.off('unhandledRejection', onRejection);
+
+    expect(rejections).toHaveLength(0);
+    const [record] = readLines(ndjsonPath) as Array<{ text: string; args?: unknown[] }>;
+    expect(record.text).toBe('circular');
+    expect(record.args).toEqual([{ name: 'zone', self: '[Circular]' }]);
+  });
+
+  it('keeps shared-but-acyclic references rather than marking them circular', async () => {
+    const session = new ConsoleCaptureSession(ndjsonPath, deps, { enabled: true });
+    const { page, emitter: pageEmitter } = makePage();
+    const { ctx } = makeContext([page]);
+    session.attachToContext(ctx);
+
+    const shared = { id: 1 };
+    pageEmitter.emit(
+      'console',
+      makeMessage({ type: 'log', text: 'dag', args: [{ a: shared, b: shared }] }),
+    );
+    await new Promise((r) => setImmediate(r));
+    await session.close();
+
+    const [record] = readLines(ndjsonPath) as Array<{ args?: unknown[] }>;
+    expect(record.args).toEqual([{ a: { id: 1 }, b: { id: 1 } }]);
+  });
+
+  it('serializes bigint args as readable strings (JSON.stringify would throw)', async () => {
+    const session = new ConsoleCaptureSession(ndjsonPath, deps, { enabled: true });
+    const { page, emitter: pageEmitter } = makePage();
+    const { ctx } = makeContext([page]);
+    session.attachToContext(ctx);
+
+    pageEmitter.emit(
+      'console',
+      makeMessage({ type: 'log', text: 'big', args: [{ n: 9007199254740993n }] }),
+    );
+    await new Promise((r) => setImmediate(r));
+    await session.close();
+
+    const [record] = readLines(ndjsonPath) as Array<{ args?: unknown[] }>;
+    expect(record.args).toEqual([{ n: '9007199254740993n' }]);
+  });
+
   it('caps the number of args per event via maxArgsPerEvent', async () => {
     const session = new ConsoleCaptureSession(ndjsonPath, deps, {
       enabled: true,
