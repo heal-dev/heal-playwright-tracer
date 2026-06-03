@@ -15,6 +15,23 @@ import {
   wireInitialPage,
   type WireableSession,
 } from '../../../src/application/playwright-fixture/wire-all-pages';
+import { PageRegistry } from '../../../src/infrastructure/playwright-page-registry-adapter';
+
+// Context double that supports the registry's pages()/on('page') reads.
+function makeRegistryContext(pages: Page[] = []) {
+  const listeners: Array<(p: Page) => void> = [];
+  const ctx = {
+    pages: () => pages,
+    on: (event: string, fn: (p: Page) => void) => {
+      if (event === 'page') listeners.push(fn);
+    },
+    emitPage: (p: Page) => listeners.forEach((l) => l(p)),
+  };
+  return ctx as unknown as BrowserContext & { emitPage: (p: Page) => void };
+}
+function makeRegistryPage(ctx: BrowserContext): Page {
+  return { context: () => ctx } as unknown as Page;
+}
 
 function makeSession(): WireableSession & {
   attached: BrowserContext[];
@@ -184,5 +201,65 @@ describe('wireAllPages', () => {
     expect(apiRequest.newContext).not.toBe(original);
     restore();
     expect(apiRequest.newContext).toBe(original);
+  });
+});
+
+describe('wireAllPages — page registry', () => {
+  it('registers the pages of every existing context up-front', () => {
+    const ctx = makeRegistryContext();
+    const existingPage = makeRegistryPage(ctx);
+    (ctx.pages as () => Page[]) = () => [existingPage];
+    const browser = {
+      contexts: () => [ctx],
+      newContext: async () => ({}) as unknown as BrowserContext,
+      newPage: async () => ({}) as unknown as Page,
+    } as unknown as Browser;
+
+    const registry = new PageRegistry();
+    wireAllPages([makeSession()], { browser, pageRegistry: registry });
+    expect(registry.idForPage(existingPage)).toBe('ctx0/p0');
+  });
+
+  it('registers a context created via the patched newContext, plus later popups', async () => {
+    const newCtx = makeRegistryContext();
+    const browser = {
+      contexts: () => [],
+      newContext: async () => newCtx,
+      newPage: async () => ({}) as unknown as Page,
+    } as unknown as Browser;
+
+    const registry = new PageRegistry();
+    wireAllPages([makeSession()], { browser, pageRegistry: registry });
+
+    await browser.newContext();
+    // A popup opened later in that context is registered via on('page').
+    const popup = makeRegistryPage(newCtx);
+    newCtx.emitPage(popup);
+    expect(registry.idForPage(popup)).toBe('ctx0/p0');
+  });
+
+  it('registers the context of a page created via patched newPage', async () => {
+    const ctx = makeRegistryContext();
+    const page = makeRegistryPage(ctx);
+    (ctx.pages as () => Page[]) = () => [page];
+    const browser = {
+      contexts: () => [],
+      newContext: async () => ({}) as unknown as BrowserContext,
+      newPage: async () => page,
+    } as unknown as Browser;
+
+    const registry = new PageRegistry();
+    wireAllPages([makeSession()], { browser, pageRegistry: registry });
+
+    await browser.newPage();
+    expect(registry.idForPage(page)).toBe('ctx0/p0');
+  });
+
+  it('does nothing registry-related when no pageRegistry is supplied', async () => {
+    const { browser } = makeBrowser();
+    const session = makeSession();
+    // Simply must not throw without a registry.
+    expect(() => wireAllPages([session], { browser })).not.toThrow();
+    await browser.newContext();
   });
 });

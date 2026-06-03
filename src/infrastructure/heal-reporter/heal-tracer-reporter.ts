@@ -84,24 +84,46 @@ export const HEAL_PENDING_SUBDIR = '.heal-pending';
 /**
  * One entry of the `videoPages` array the fixture writes into the
  * registry at teardown. Carries the per-page identity the reporter
- * needs to stamp `pageName` / `pageUrl` onto the corresponding video
- * attachment.
+ * stamps onto the corresponding video attachment.
  *
- * No file-path field: Playwright renames each recording from its
- * `.playwright-artifacts-N/<hash>.webm` recording location to a
- * deterministic `<outputDir>/video[-N].webm` AFTER the fixture's
- * teardown but BEFORE the reporter's `onTestEnd`, so any path the
- * fixture could capture is stale by the time the reporter sees it.
+ * The reporter resolves which attachment each entry describes by a
+ * hybrid strategy:
  *
- * The join is positional instead: the fixture pushes entries in the
- * same order as `page.context().pages()`, and the reporter pairs the
- * Nth video attachment in `result.attachments` with `videoPages[N]`.
+ *   - `videoPath` present → match by path. Manually-created contexts
+ *     (a test's own `browser.newContext({recordVideo})`) close during
+ *     the test body, so their `Video.path()` resolves to a stable file
+ *     the test attaches as-is — the fixture captures the same path.
+ *   - `videoPath` absent → positional fallback. The built-in `page`
+ *     context's video is renamed by Playwright from its recording-time
+ *     `<hash>.webm` to `<outputDir>/video[-N].webm` AFTER teardown but
+ *     BEFORE `onTestEnd`, so no path the fixture captured would still
+ *     match. These entries are paired with the remaining (unmatched)
+ *     video attachments in order — both sides walk pages in creation
+ *     order, so the index is stable.
  */
 export interface VideoPageInfo {
   /** Synthetic role label: `'main'`, `'page-1'`, `'page-2'`, … */
   name: string;
   /** Page URL captured at fixture teardown. */
   url: string;
+  /**
+   * Stable registry id (`ctx0/p0`, …) of the page that recorded this
+   * video — joins to statements' `pageId`. Absent on traces written
+   * before this field existed.
+   */
+  pageId?: string;
+  /**
+   * `Date.now()` when the page was first registered — the Tier 1
+   * video-start anchor a consumer subtracts from a statement's
+   * `wallTime` to get an offset into this recording.
+   */
+  videoStartWallMs?: number;
+  /**
+   * Resolved final video path, present only for pages whose context
+   * closed before teardown (see the hybrid strategy above). Used by
+   * the reporter to match this entry to a video attachment by path.
+   */
+  videoPath?: string;
 }
 
 /**
@@ -537,15 +559,19 @@ export class HealTracerReporter implements Reporter {
     const dstRoot = path.resolve(traceCtx.rootDir);
     const attachments: TestAttachment[] = [];
 
-    // Positional join with the fixture's `videoPages` array: the Nth
-    // video attachment in `result.attachments` pairs with the Nth
-    // entry in `videoPages`. We can't join by path because Playwright
-    // renames the video file between fixture teardown (recording-time
-    // hash name) and reporter onTestEnd (final `video[-N].webm`).
-    // Both sides walk pages/attachments in creation order, so index
-    // is stable.
+    // Join each video attachment to its recording page (see
+    // `VideoPageInfo`): match by path when the fixture captured one
+    // (manual contexts, whose file is stable), else pair positionally
+    // with the entries that have no path (the built-in context's video,
+    // which Playwright renames between teardown and now). Both sides
+    // walk pages in creation order, so the positional index is stable.
     const videoPages = traceCtx.videoPages ?? [];
-    let videoIndex = 0;
+    const videoPageByPath = new Map<string, VideoPageInfo>();
+    for (const vp of videoPages) {
+      if (vp.videoPath) videoPageByPath.set(path.resolve(vp.videoPath), vp);
+    }
+    const positionalVideoPages = videoPages.filter((vp) => !vp.videoPath);
+    let positionalIndex = 0;
 
     for (const att of result.attachments ?? []) {
       if (!att.path) continue;
@@ -576,11 +602,15 @@ export class HealTracerReporter implements Reporter {
       };
 
       if (att.contentType.toLowerCase().startsWith('video/')) {
-        const vp = videoPages[videoIndex];
-        videoIndex += 1;
+        // Path match first (manual videos); only consume a positional
+        // slot when there's no path match (`??` short-circuits the
+        // increment).
+        const vp = videoPageByPath.get(srcResolved) ?? positionalVideoPages[positionalIndex++];
         if (vp) {
           entry.pageName = vp.name;
           entry.pageUrl = vp.url;
+          if (vp.pageId) entry.pageId = vp.pageId;
+          if (vp.videoStartWallMs !== undefined) entry.videoStartWallMs = vp.videoStartWallMs;
         }
       }
 
@@ -942,10 +972,16 @@ function sanitizeVideoPages(raw: unknown): VideoPageInfo[] | undefined {
   const out: VideoPageInfo[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') continue;
-    const { name, url } = item as Record<string, unknown>;
+    const { name, url, pageId, videoStartWallMs, videoPath } = item as Record<string, unknown>;
     if (typeof name !== 'string' || name.length === 0) continue;
     if (typeof url !== 'string') continue;
-    out.push({ name, url });
+    const entry: VideoPageInfo = { name, url };
+    if (typeof pageId === 'string' && pageId.length > 0) entry.pageId = pageId;
+    if (typeof videoStartWallMs === 'number' && Number.isFinite(videoStartWallMs)) {
+      entry.videoStartWallMs = videoStartWallMs;
+    }
+    if (typeof videoPath === 'string' && videoPath.length > 0) entry.videoPath = videoPath;
+    out.push(entry);
   }
   return out.length > 0 ? out : undefined;
 }

@@ -54,6 +54,7 @@ import {
   pushStep,
   popStep,
   setCurrentStatementScreenshot,
+  setCurrentStatementPage,
   getCurrentStatementSeq,
   getCurrentStepPath,
   getStartedAt,
@@ -67,16 +68,17 @@ import type { HealTraceExporter } from '../../domain/trace-event-recorder/port/h
 import { PlaywrightStepTrackingAdapter } from '../../infrastructure/playwright-step-tracking-adapter';
 import { PlaywrightTestContextAdapter } from '../../infrastructure/playwright-test-context-adapter';
 import { startLocatorScreenshotCapture } from '../../infrastructure/playwright-locator-screenshot-adapter';
+import {
+  PageRegistry,
+  startPageAttribution,
+  patchTestInfoAttach,
+} from '../../infrastructure/playwright-page-registry-adapter';
 import { StdoutCaptureSession } from '../../infrastructure/stdout-capture-adapter';
 import { ConsoleCaptureSession } from '../../infrastructure/playwright-console-capture-adapter';
 import { NetworkCaptureSession } from '../../infrastructure/playwright-network-capture-adapter';
 import { HealTracesLayout, resolveExecutionId } from '../../infrastructure/heal-traces-layout';
 import { ArtifactSummaryPrinter } from '../../infrastructure/artifact-summary-printer';
-import {
-  healPendingRegistryPath,
-  type HealTraceContext,
-  type VideoPageInfo,
-} from '../../infrastructure/heal-reporter';
+import { healPendingRegistryPath, type HealTraceContext } from '../../infrastructure/heal-reporter';
 
 import { getTracerConfig, resetTeardownHooks, drainTeardownHooks } from '../heal-config';
 import type {
@@ -88,6 +90,7 @@ import type {
 import { withTimeout } from '../../util/with-timeout';
 import { log } from '../../util/logger';
 import { wireAllPages, type WireableSession } from './wire-all-pages';
+import { buildVideoPages } from './build-video-pages';
 import { HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
 
@@ -245,6 +248,26 @@ export const test = base.extend<TraceFixtures>({
         setCurrentStatementScreenshot,
         screenshotTimeoutMs,
       );
+
+      // Page attribution: assign every page/context a stable id and
+      // stamp it (plus the page's live URL) onto the statement whose
+      // action/assertion/navigation touched it, so statements can be
+      // linked to the recorded video of the right page. Independent of
+      // the sidecar sessions below — it works even when network/console
+      // capture is off. `pageRegistry` is also enumerated at teardown
+      // to map each video back to a page id.
+      const pageRegistry = new PageRegistry();
+      const stopPageAttribution = startPageAttribution(page, pageRegistry, setCurrentStatementPage);
+      // Capture the final attachment path of any video a test attaches
+      // itself (manual contexts), keyed by the recording path it passed
+      // — joined to the registry at teardown to label that video with
+      // its page id. Playwright re-hashes attached files, so the
+      // recording path alone can't be matched against the reporter's
+      // attachment path.
+      const videoAttachMap = new Map<string, string>();
+      const restoreAttach = patchTestInfoAttach(testInfo, (recordingPath, finalPath) =>
+        videoAttachMap.set(recordingPath, finalPath),
+      );
       const stdoutSession = new StdoutCaptureSession();
 
       // Sidecar capture: instantiate sessions for whichever streams
@@ -285,19 +308,24 @@ export const test = base.extend<TraceFixtures>({
       const wireableSessions: WireableSession[] = [];
       if (consoleSession) wireableSessions.push(consoleSession);
       if (networkSession) wireableSessions.push(networkSession);
-      let restoreWiring: (() => void) | undefined;
+      // Wire the test's primary BrowserContext + APIRequestContext
+      // immediately (when sidecar sessions are enabled), then patch the
+      // Browser for any new contexts. wireAllPages is called
+      // UNCONDITIONALLY so the page registry observes every context and
+      // page — including manually-created (`browser.newContext`) ones
+      // that record their own video — even when network/console capture
+      // is off. With no sessions it only installs the registry hooks.
       if (wireableSessions.length > 0) {
-        // Wire the test's primary BrowserContext + APIRequestContext
-        // immediately, then patch the Browser for any new contexts.
         for (const s of wireableSessions) s.attachToContext(page.context());
         if (networkSession) {
           networkSession.attachToApiRequestContext(request);
         }
-        restoreWiring = wireAllPages(wireableSessions, {
-          browser,
-          apiRequest: playwrightRequest,
-        });
       }
+      const restoreWiring: () => void = wireAllPages(wireableSessions, {
+        browser,
+        apiRequest: playwrightRequest,
+        pageRegistry,
+      });
 
       // Install per-statement pre-processor chain on `globalThis`. The
       // Babel plugin emits `await globalThis.__heal_preprocess?.(meta)`
@@ -353,24 +381,26 @@ export const test = base.extend<TraceFixtures>({
       try {
         await use();
       } finally {
-        // Record each video-recording page's identity (synthetic
-        // role label + URL) here, before any teardown hook navigates
-        // or closes a page, so `pageUrl` reflects where the test body
-        // left the page. The reporter pairs this list positionally
-        // with `result.attachments` video entries — we cannot match
-        // by path because Playwright renames the video file between
-        // this teardown and the reporter's `onTestEnd`. Best-effort:
-        // any failure just leaves the video attachments un-enriched.
-        // Skipped entirely when `recordVideo` is off (`page.video()`
-        // is null), so it costs nothing then.
+        // Record each video-recording page's identity here, before any
+        // teardown hook navigates or closes a page, so `url` reflects
+        // where the test body left it. Sourced from the page registry
+        // so EVERY context is covered — including manually-created ones
+        // (`browser.newContext`) that a test closes itself — not just
+        // the built-in `page` context.
+        //
+        // Each entry carries the stable `pageId` (joins to the
+        // statement's `pageId`) and the Tier 1 `videoStartWallMs`
+        // anchor. For a page whose context already closed, its
+        // recording path was captured on close and is joined here to
+        // the FINAL attachment path (via `videoAttachMap`) so the
+        // reporter can match that video by path. The built-in context's
+        // video has no such path — Playwright renames it after this
+        // teardown — so it is paired positionally by the reporter.
+        //
+        // Best-effort: any failure just leaves the videos un-enriched.
+        // Costs nothing when `recordVideo` is off (`page.video()` null).
         try {
-          const videoPages: VideoPageInfo[] = [];
-          let pageIndex = 0;
-          for (const p of page.context().pages()) {
-            if (!p.video()) continue;
-            const name = p === page ? 'main' : `page-${(pageIndex += 1)}`;
-            videoPages.push({ name, url: p.url() });
-          }
+          const videoPages = buildVideoPages(pageRegistry.list(), page, videoAttachMap);
           if (videoPages.length > 0) {
             fs.writeFileSync(
               registryPath,
@@ -418,6 +448,8 @@ export const test = base.extend<TraceFixtures>({
 
         const capturedStdout = stdoutSession.stop();
         stopScreenshots();
+        stopPageAttribution();
+        restoreAttach();
 
         // Stop sidecar capture BEFORE finalizing the projector. Order:
         //   1. restore the Browser patches so any post-teardown code
@@ -428,12 +460,10 @@ export const test = base.extend<TraceFixtures>({
         //      final status so 'on-error' bodies are flushed only
         //      when relevant. Network last so any in-flight response
         //      that fires during teardown still lands in the file.
-        if (restoreWiring) {
-          try {
-            restoreWiring();
-          } catch (err) {
-            log.error('wireAllPages.restore failed', err);
-          }
+        try {
+          restoreWiring();
+        } catch (err) {
+          log.error('wireAllPages.restore failed', err);
         }
         if (consoleSession) {
           try {

@@ -20,7 +20,8 @@
 //      Babel-inserted calls find them at runtime.
 //   4. Re-exports the public API (`reset`, `setContext`, `setPage`,
 //      `pushStep`, `popStep`, `setCurrentStatementScreenshot`,
-//      `setExporter`) for the fixture and infrastructure adapters to
+//      `setCurrentStatementPage`, `setExporter`) for the fixture and
+//      infrastructure adapters to
 //      import. The singleton shape is the integration surface between
 //      the always-on domain recorder and the per-test fixture.
 //
@@ -73,6 +74,7 @@ export const setPage = traceEventRecorder.setPage;
 export const pushStep = traceEventRecorder.pushStep;
 export const popStep = traceEventRecorder.popStep;
 export const setCurrentStatementScreenshot = traceEventRecorder.setCurrentStatementScreenshot;
+export const setCurrentStatementPage = traceEventRecorder.setCurrentStatementPage;
 export const setExporter = traceEventRecorder.setExporter;
 
 // Read accessors for sidecar adapters (network, console). These

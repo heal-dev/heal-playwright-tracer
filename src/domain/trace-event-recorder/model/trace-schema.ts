@@ -70,12 +70,17 @@ export interface MetaEvent extends TraceEventBase {
  * Emitted when a traced statement is about to run. Pushed onto the
  * active-enter stack and later paired with an ok or throw event.
  *
- * `screenshot` is mutated post-emit by
- * `setCurrentStatementScreenshot(filename)` — the locator-screenshots
- * feature calls that after capturing a highlight PNG, which stamps
- * the filename onto whichever enter event is currently on top of the
- * stack. The exporter stores events by reference, so the mutation is
- * visible when the builder reads snapshot() at teardown.
+ * `screenshot`, `pageId` and `pageUrl` may be mutated post-emit:
+ *   - `setCurrentStatementScreenshot(filename)` — the locator-screenshots
+ *     feature calls that after capturing a highlight PNG.
+ *   - `setCurrentStatementPage(pageId, pageUrl)` — the page-attribution
+ *     feature calls that at the moment a locator action / assertion /
+ *     navigation fires, stamping the id of the page the statement acted
+ *     on (and that page's URL at action time, which is more specific
+ *     than the enter-time `currentPage` read below).
+ * Each stamps the value onto whichever enter event is currently on top
+ * of the stack. The exporter stores events by reference, so the
+ * mutation is visible when the projector reads it at ok/throw time.
  */
 export interface EnterEvent extends TraceEventBase {
   type: 'enter';
@@ -101,6 +106,14 @@ export interface EnterEvent extends TraceEventBase {
   step: string | null;
   stepPath: string[] | null;
   pageUrl?: string;
+  /**
+   * Stable id of the page this statement's action / assertion /
+   * navigation targeted, assigned by the per-test page registry
+   * (`ctx0/p0` for the primary page, `ctx1/p0`, … for others). Stamped
+   * post-emit by `setCurrentStatementPage`. Absent for statements that
+   * touched no page (pure JS/TS).
+   */
+  pageId?: string;
   /** Highlight screenshot filename captured by locator-screenshots, if any. */
   screenshot?: string;
 }

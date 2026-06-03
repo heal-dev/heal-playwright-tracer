@@ -116,6 +116,24 @@ export class TraceEventRecorder implements TraceEventRecorderState {
   };
 
   /**
+   * Stamp the page a statement acted on onto whatever enter event is
+   * currently on top of the active-enter stack. Called by the
+   * page-attribution feature at the moment a patched Locator action,
+   * wrapped assertion, or patched Page navigation fires — at which
+   * point the exact target page (and therefore its registry id and
+   * live URL) is known. `pageUrl` overrides the enter-time
+   * `currentPage` read because it reflects the specific page the
+   * action touched, not the recorder's global "current page". No-op if
+   * the stack is empty (fired outside any instrumented statement).
+   */
+  setCurrentStatementPage = (pageId: string, pageUrl?: string): void => {
+    const top = this.enterStack.peek();
+    if (!top) return;
+    top.pageId = pageId;
+    if (pageUrl !== undefined) top.pageUrl = pageUrl;
+  };
+
+  /**
    * Read the `seq` of the enter event currently on top of the active
    * stack — i.e. "what statement is running right now" — for sidecar
    * adapters (network, console) that need to attribute an out-of-band

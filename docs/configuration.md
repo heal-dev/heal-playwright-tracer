@@ -162,9 +162,12 @@ the hook removes the need for that collector to re-parse the NDJSON
 file or run as a separate Playwright reporter.
 
 The hook receives the same record that was just appended to
-`heal-traces.ndjson` — already enriched with each video's
-synthetic `pageName` (`'main'`, `'page-1'`, …) and the `pageUrl`
-the test left the page on — plus a correlation context:
+`heal-traces.ndjson` — already enriched, on each video attachment,
+with the synthetic `pageName` (`'main'`, `'page-1'`, …), the
+`pageUrl` the test left the page on, the stable `pageId` (`ctx0/p0`,
+…) that joins to each `Statement.pageId`, and the `videoStartWallMs`
+anchor (subtract it from a statement's `wallTime` for the offset
+into the recording) — plus a correlation context:
 
 ```ts
 // playwright.config.ts
@@ -190,6 +193,8 @@ const shipAttachments: AttachmentsHook = async (record, ctx) => {
       // Video attachments only; undefined on traces and screenshots.
       pageName: att.pageName,
       pageUrl: att.pageUrl,
+      pageId: att.pageId,
+      videoStartWallMs: att.videoStartWallMs,
     });
   }
 };

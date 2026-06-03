@@ -117,6 +117,108 @@ describe('statement-projector — leadingComment', () => {
   });
 });
 
+describe('statement-projector — pageId / pageUrl', () => {
+  it('copies pageId present on the enter event onto the Statement', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent({ pageId: 'ctx0/p0' }));
+    projector.write(okEvent());
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(stmt.pageId).toBe('ctx0/p0');
+  });
+
+  it('picks up pageId / pageUrl stamped onto the enter event AFTER it was projected', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    const enter = enterEvent();
+    projector.write(enter);
+    // Simulate setCurrentStatementPage mutating the live enter event
+    // mid-statement (the action fired after __enter, before __ok).
+    enter.pageId = 'ctx1/p0';
+    enter.pageUrl = 'https://app.test/dashboard';
+    projector.write(okEvent());
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(stmt.pageId).toBe('ctx1/p0');
+    expect(stmt.pageUrl).toBe('https://app.test/dashboard');
+  });
+
+  it('a late pageUrl stamp overrides the enter-time pageUrl', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    const enter = enterEvent({ pageUrl: 'https://app.test/login' });
+    projector.write(enter);
+    enter.pageUrl = 'https://app.test/after-action';
+    projector.write(okEvent());
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(stmt.pageUrl).toBe('https://app.test/after-action');
+  });
+
+  it('omits pageId from the JSON shape when the statement touched no page', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    projector.write(enterEvent());
+    projector.write(okEvent());
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(Object.prototype.hasOwnProperty.call(stmt, 'pageId')).toBe(false);
+  });
+
+  it('picks up a late pageId / pageUrl on the THROW path', () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    const enter = enterEvent();
+    projector.write(enter);
+    enter.pageId = 'ctx0/p0';
+    enter.pageUrl = 'https://app.test/failed';
+    projector.write({
+      type: 'throw',
+      seq: 2,
+      t: 20,
+      wallTime: 1700000000020,
+      enterSeq: 1,
+      duration: 10,
+      error: { message: 'boom' },
+    } as ThrowEvent);
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(stmt.status).toBe('threw');
+    expect(stmt.pageId).toBe('ctx0/p0');
+    expect(stmt.pageUrl).toBe('https://app.test/failed');
+  });
+
+  it('picks up a late pageId when a pending root is flushed by finalize()', async () => {
+    const { records, exporter } = createRecordingExporter();
+    const projector = new StatementProjector(exporter);
+
+    projector.write(metaEvent());
+    const enter = enterEvent();
+    projector.write(enter);
+    // Stamp the page, but never emit ok/throw — finalize() must flush
+    // the still-pending root and still carry the late page fields.
+    enter.pageId = 'ctx2/p1';
+    enter.pageUrl = 'https://app.test/hung';
+    await projector.finalize({ status: 'timedOut', duration: 5000 });
+
+    const stmt = (records.find((r) => r.kind === 'statement') as StatementRecord).statement;
+    expect(stmt.status).toBe('threw');
+    expect(stmt.pageId).toBe('ctx2/p1');
+    expect(stmt.pageUrl).toBe('https://app.test/hung');
+  });
+});
+
 describe('statement-projector — tree building', () => {
   it('nests child statements under their parent; parent subtree emitted once ok resolves the root', () => {
     const { records, exporter } = createRecordingExporter();

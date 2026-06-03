@@ -566,6 +566,163 @@ describe('HealTracerReporter — attachments', () => {
     ]);
   });
 
+  it('stamps pageId and videoStartWallMs from the videoPages entry onto the attachment', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const videoSrc = writeSrc(playwrightOutputDir, 'video.webm', 'VIDEO');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          {
+            name: 'main',
+            url: 'https://app.test/home',
+            pageId: 'ctx0/p0',
+            videoStartWallMs: 1700000000123,
+          },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [{ name: 'video', path: videoSrc, contentType: 'video/webm' }],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{
+        name: string;
+        pageId?: string;
+        videoStartWallMs?: number;
+        pageName?: string;
+      }>;
+    };
+    expect(last.attachments[0]).toMatchObject({
+      name: 'video',
+      pageName: 'main',
+      pageId: 'ctx0/p0',
+      videoStartWallMs: 1700000000123,
+    });
+  });
+
+  it('sanitizes malformed videoPages fields: keeps the entry, drops the bad field', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    const videoSrc = writeSrc(playwrightOutputDir, 'video.webm', 'VIDEO');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    // Valid pageName/pageUrl + valid pageId, but a non-numeric
+    // videoStartWallMs and a non-string videoPath. sanitizeVideoPages
+    // must keep the entry (pageName/pageUrl/pageId survive) and drop the
+    // two malformed fields rather than letting e.g. a NaN anchor through.
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          {
+            name: 'main',
+            url: 'https://app.test/home',
+            pageId: 'ctx0/p0',
+            videoStartWallMs: 'not-a-number',
+            videoPath: 42,
+          },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [{ name: 'video', path: videoSrc, contentType: 'video/webm' }],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<Record<string, unknown>>;
+    };
+    const video = last.attachments[0];
+    // Entry survived (matched positionally) with the valid fields…
+    expect(video).toMatchObject({ name: 'video', pageName: 'main', pageId: 'ctx0/p0' });
+    // …but the malformed anchor was dropped, never stamped as NaN.
+    expect(Object.prototype.hasOwnProperty.call(video, 'videoStartWallMs')).toBe(false);
+  });
+
+  it('matches a manual video by path and uses positional fallback for the built-in video', () => {
+    const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
+      ndjsonContent:
+        '{"kind":"test-header","schemaVersion":1}\n' +
+        '{"kind":"test-result","status":"passed","duration":10}\n',
+    });
+    // A manually-recorded video (stable path captured by the fixture)
+    // and the built-in context's video (no path — renamed by Playwright).
+    const manualSrc = writeSrc(playwrightOutputDir, 'manual.webm', 'MANUAL');
+    const builtinSrc = writeSrc(playwrightOutputDir, 'video.webm', 'BUILTIN');
+
+    const registryPath = healPendingRegistryPath(projectOutputDir, testId, attempt);
+    const base = JSON.parse(fs.readFileSync(registryPath, 'utf8')) as Record<string, unknown>;
+    // videoPages order is built-in first, manual second — but the
+    // attachments arrive manual first. Pure positional pairing would
+    // mislabel; the path match on the manual entry fixes it.
+    fs.writeFileSync(
+      registryPath,
+      JSON.stringify({
+        ...base,
+        videoPages: [
+          { name: 'main', url: 'https://app.test/home', pageId: 'ctx0/p0' },
+          {
+            name: 'page-1',
+            url: 'https://role.test/operator',
+            pageId: 'ctx1/p0',
+            videoPath: manualSrc,
+          },
+        ],
+      }),
+    );
+
+    const reporter = newReporter();
+    reporter.onTestEnd(
+      fakeTestCase(),
+      fakeResult({
+        status: 'passed',
+        duration: 10,
+        attachments: [
+          { name: 'video', path: manualSrc, contentType: 'video/webm' },
+          { name: 'video', path: builtinSrc, contentType: 'video/webm' },
+        ],
+      } as unknown as Partial<TestResult>),
+    );
+
+    const last = JSON.parse(readLines(ndjsonPath).at(-1)!) as {
+      attachments: Array<{ path: string; pageId?: string; pageName?: string }>;
+    };
+    const manual = last.attachments.find((a) => a.path === 'videos/manual.webm');
+    const builtin = last.attachments.find((a) => a.path === 'videos/video.webm');
+    // Manual matched by path → ctx1, NOT the positionally-first ctx0.
+    expect(manual).toMatchObject({ pageId: 'ctx1/p0', pageName: 'page-1' });
+    // Built-in fell back to the one remaining positional entry → ctx0.
+    expect(builtin).toMatchObject({ pageId: 'ctx0/p0', pageName: 'main' });
+  });
+
   it('leaves a surplus video un-enriched when fewer videoPages entries than video attachments', () => {
     const { ndjsonPath, playwrightOutputDir, testId, attempt } = setupTest({
       ndjsonContent:

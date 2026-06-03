@@ -40,7 +40,7 @@ export function runScenarioAssertions(
   describe(`integration: end-to-end scenarios (${label})`, () => {
     it('1. happy path click — basic pipeline + statement.screenshot', () => {
       const trace = getTrace('happy path click');
-      expect(trace.schemaVersion).toBe(3);
+      expect(trace.schemaVersion).toBe(4);
       expect(trace.test.status).toBe('passed');
       expect(trace.statements.length).toBeGreaterThan(0);
 
@@ -83,6 +83,40 @@ export function runScenarioAssertions(
       );
       expect(userExpectStmt).toBeDefined();
       expect(userExpectStmt?.screenshot ?? null).toBeNull();
+    });
+
+    it('1b. page attribution — nav / action / assertion carry pageId + pageUrl', () => {
+      const trace = getTrace('happy path click');
+
+      // Navigation: `await page.goto(base + '/')` is stamped after the
+      // navigation resolves, so pageUrl is the destination.
+      const goto = findStatement(trace, (s) => /page\.goto\(/.test(s.source));
+      expect(goto?.pageId).toBe('ctx0/p0');
+      expect(goto?.pageUrl).toMatch(/^https?:\/\//);
+
+      // Locator action: `await button.click()`.
+      const click = findStatement(
+        trace,
+        (s) => /\bbutton\.click\(\)/.test(s.source) && s.kind === 'expression',
+      );
+      expect(click?.pageId).toBe('ctx0/p0');
+      expect(click?.pageUrl).toMatch(/^https?:\/\//);
+
+      // Assertion: the injected `__heal_expect_screenshot(...)` line is
+      // the one that runs the capture pipeline and is therefore the
+      // statement the page stamp lands on (same as `screenshot`).
+      const assertStmt = findStatement(trace, (s) => /__heal_expect_screenshot\(/.test(s.source));
+      expect(assertStmt?.pageId).toBe('ctx0/p0');
+      expect(assertStmt?.pageUrl).toMatch(/^https?:\/\//);
+
+      // A pure-JS statement (the `const button = page.locator(...)`
+      // declaration touches no page action) must NOT carry a pageId.
+      const decl = findStatement(
+        trace,
+        (s) => s.kind === 'variable' && /const button =/.test(s.source),
+      );
+      expect(decl).toBeDefined();
+      expect(decl?.pageId ?? null).toBeNull();
     });
 
     it('2. failing assertion — test.status=failed and a statement with status=threw', () => {

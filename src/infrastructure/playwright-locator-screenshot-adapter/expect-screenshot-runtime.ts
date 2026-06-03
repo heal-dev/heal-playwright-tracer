@@ -33,6 +33,7 @@
 
 import type { Locator, Page } from 'playwright';
 import { getActiveCaptureSession } from './locator-patch';
+import { getActivePageStamper } from '../playwright-page-registry-adapter';
 import { HEAL_EXPECT_SCREENSHOT } from '../../domain/trace-event-recorder/model/global-names';
 import { log } from '../../util/logger';
 
@@ -78,9 +79,20 @@ export async function expectScreenshotHelper(
   options?: ExpectScreenshotOptions,
 ): Promise<void> {
   if (!isLocator(target)) return;
+  const page = typeof target.page === 'function' ? (target.page() as Page | null) : null;
+  // Attribute this assertion to its target page — done before (and
+  // independent of) screenshot capture, so attribution still works
+  // even if screenshots are disabled. Stamps the URL the page is on at
+  // assertion time.
+  if (page) {
+    try {
+      getActivePageStamper()?.(page);
+    } catch (err) {
+      log.warn('page stamp failed for expect', err);
+    }
+  }
   const session = getActiveCaptureSession();
   if (!session) return;
-  const page = typeof target.page === 'function' ? (target.page() as Page | null) : null;
   if (!page) return;
 
   // Probe match count first. The user may be asserting that an element

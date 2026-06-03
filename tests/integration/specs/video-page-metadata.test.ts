@@ -42,6 +42,11 @@ const base = process.env.INTEGRATION_BASE_URL as string;
 
 test('records a video for the main page', async ({ page }) => {
   await page.goto(base + '/');
+  // Keep the recording alive briefly so Playwright reliably flushes at
+  // least one video frame. A page that navigates and closes instantly
+  // can yield an empty/absent video on some Playwright versions under
+  // load (notably 1.50 in CI), which would drop the attachment.
+  await page.waitForTimeout(1000);
 });
 `;
 
@@ -111,6 +116,14 @@ describe('integration: video page metadata in test-attachments', () => {
     // then is the integration base URL the spec navigated to.
     expect(typeof video.pageUrl).toBe('string');
     expect(video.pageUrl?.startsWith('http')).toBe(true);
+
+    // The built-in page is the registry's primary page → ctx0/p0, and
+    // it carries the Tier 1 video-start anchor. The built-in video has
+    // no captured path (its context is still open at teardown), so this
+    // arrived via the positional fallback.
+    expect(video.pageId).toBe('ctx0/p0');
+    expect(typeof video.videoStartWallMs).toBe('number');
+    expect(video.videoStartWallMs).toBeGreaterThan(0);
   });
 
   it('does not stamp pageName/pageUrl on non-video attachments', () => {
