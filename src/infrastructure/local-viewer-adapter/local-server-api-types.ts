@@ -136,6 +136,24 @@ export interface AttachmentRef {
   name: string;
   path: string;
   contentType: string;
+  /**
+   * Video attachments only: stable id of the page that recorded this
+   * video (`ctx0/p0`, …). Joins to each `Statement.pageId` so the SPA
+   * can pick the right video for a statement (multi-context tests
+   * produce several). Absent on traces and pre-attribution rows.
+   */
+  pageId?: string;
+  /**
+   * Video attachments only: `Date.now()` anchor of the recording's
+   * start. The SPA can derive a statement's offset itself, but the
+   * server already stamps `Statement.videoTime` from it. Same presence
+   * rules as `pageId`.
+   */
+  videoStartWallMs?: number;
+  /** Video attachments only: synthetic role label (`'main'`, `'page-1'`, …). */
+  pageName?: string;
+  /** Video attachments only: page URL captured at fixture teardown. */
+  pageUrl?: string;
 }
 
 /**

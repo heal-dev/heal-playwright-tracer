@@ -198,6 +198,16 @@ export interface Statement {
    * absent for pure JS/TS statements. See `EnterEvent.pageId`.
    */
   pageId?: string;
+  /**
+   * Offset, in seconds, of this statement into the recorded video of
+   * its page — `max(0, (test.startedAt + t − video.videoStartWallMs) / 1000)`,
+   * joined on `pageId`. VIEWER-DERIVED: computed by the local viewer
+   * server (and the backend BFF) when serving a trace; the projector
+   * NEVER writes it to the on-disk NDJSON, so it is absent there.
+   * Absent when the statement has no `pageId` or the page recorded no
+   * video.
+   */
+  videoTime?: number;
 
   /** Snapshot of bindings introduced by `const`/`let` that succeeded. */
   vars?: Record<string, unknown>;

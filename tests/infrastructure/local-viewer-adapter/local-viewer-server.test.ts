@@ -49,6 +49,7 @@ const STMT_WITH_SCREENSHOT = {
     status: 'ok',
     duration: 5,
     t: 5,
+    pageId: 'ctx0/p0',
     children: [
       {
         seq: 2,
@@ -75,7 +76,15 @@ const ATTACHMENTS = {
   kind: 'test-attachments',
   attachments: [
     { name: 'trace', path: 'trace.zip', contentType: 'application/zip' },
-    { name: 'video', path: 'videos/video.webm', contentType: 'video/webm' },
+    {
+      name: 'video',
+      path: 'videos/video.webm',
+      contentType: 'video/webm',
+      pageId: 'ctx0/p0',
+      videoStartWallMs: 1,
+      pageName: 'main',
+      pageUrl: 'https://app.test/home',
+    },
   ],
 };
 const EXECUTION_RECORD = {
@@ -256,6 +265,39 @@ describe('LocalViewerServer', () => {
     expect(trace.attachments).toHaveLength(2);
     const trace0 = trace.attachments.find((a) => a.name === 'trace');
     expect(trace0?.url).toBe(`/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/trace.zip`);
+  });
+
+  it('surfaces pageId / videoStartWallMs / pageName on the video attachment (not on the trace)', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
+    const trace = (await res.json()) as {
+      attachments: {
+        name: string;
+        contentType: string;
+        pageId?: string;
+        videoStartWallMs?: number;
+        pageName?: string;
+      }[];
+    };
+    const video = trace.attachments.find((a) => a.contentType.startsWith('video/'))!;
+    expect(video.pageId).toBe('ctx0/p0');
+    expect(video.videoStartWallMs).toBe(1);
+    expect(video.pageName).toBe('main');
+    // The trace attachment carries none of the video-only fields.
+    const traceAtt = trace.attachments.find((a) => a.name === 'trace')!;
+    expect(traceAtt.pageId).toBeUndefined();
+    expect(traceAtt.videoStartWallMs).toBeUndefined();
+  });
+
+  it('stamps videoTime on statements joined to their page video (clamped, only when pageId matches)', async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
+    const trace = (await res.json()) as {
+      statements: { videoTime?: number; children: { videoTime?: number }[] }[];
+    };
+    // header.startedAt=1, root t=5, video anchor videoStartWallMs=1
+    // → (1 + 5 − 1) / 1000.
+    expect(trace.statements[0].videoTime).toBe((1 + 5 - 1) / 1000);
+    // The child statement has no pageId → no videoTime.
+    expect(trace.statements[0].children[0].videoTime).toBeUndefined();
   });
 
   it('rejects path traversal in screenshot filename', async () => {
