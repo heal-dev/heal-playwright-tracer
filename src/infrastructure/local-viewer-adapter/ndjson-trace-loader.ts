@@ -174,3 +174,31 @@ export const rewriteScreenshots = (
     screenshot: stmt.screenshot ? toUrl(stmt.screenshot) : undefined,
     children: rewriteScreenshots(stmt.children, toUrl),
   }));
+
+/**
+ * Stamp each statement's `videoTime` (seconds into its page's recorded
+ * video) so the SPA can seek the right video to the moment a statement
+ * ran. `videoTime = max(0, (startedAtMs + stmt.t − anchor) / 1000)`,
+ * where `anchor` is the page's `videoStartWallMs` looked up by
+ * `stmt.pageId`. Walks the tree depth-first; pure (does not mutate
+ * input). Leaves `videoTime` unset when the statement has no `pageId`,
+ * its page recorded no video, or the test start is unknown — exactly
+ * the cases where no offset is meaningful.
+ */
+export const stampVideoTimes = (
+  statements: Statement[],
+  startedAtMs: number | undefined,
+  videoStartByPageId: Map<string, number>,
+): Statement[] =>
+  statements.map((stmt) => {
+    const anchor = stmt.pageId !== undefined ? videoStartByPageId.get(stmt.pageId) : undefined;
+    const videoTime =
+      startedAtMs !== undefined && anchor !== undefined
+        ? Math.max(0, (startedAtMs + stmt.t - anchor) / 1000)
+        : undefined;
+    return {
+      ...stmt,
+      ...(videoTime !== undefined ? { videoTime } : {}),
+      children: stampVideoTimes(stmt.children, startedAtMs, videoStartByPageId),
+    };
+  });

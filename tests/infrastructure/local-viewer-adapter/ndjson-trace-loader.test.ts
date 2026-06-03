@@ -12,7 +12,9 @@ import { describe, expect, it } from 'vitest';
 import {
   loadTrace,
   rewriteScreenshots,
+  stampVideoTimes,
 } from '../../../src/infrastructure/local-viewer-adapter/ndjson-trace-loader';
+import type { Statement } from '../../../src/domain/trace-event-recorder/model/statement-trace-schema';
 
 const HEADER = {
   kind: 'test-header',
@@ -164,5 +166,84 @@ describe('rewriteScreenshots', () => {
     const stmts = [stmt];
     rewriteScreenshots(stmts as never[], (f) => `URL/${f}`);
     expect(stmt.screenshot).toBe('a.png');
+  });
+});
+
+describe('stampVideoTimes', () => {
+  const mk = (over: Partial<Statement>): Statement =>
+    ({
+      seq: 1,
+      file: 'a.spec.ts',
+      line: 1,
+      endLine: 1,
+      kind: 'ExpressionStatement',
+      scope: 'test',
+      source: 'x',
+      hasAwait: false,
+      step: null,
+      stepPath: null,
+      status: 'ok',
+      duration: 0,
+      t: 0,
+      children: [],
+      ...over,
+    }) as Statement;
+
+  it('computes videoTime = (startedAt + t − anchor) / 1000 for a page with a video', () => {
+    const out = stampVideoTimes(
+      [mk({ t: 2000, pageId: 'ctx0/p0' })],
+      1000,
+      new Map([['ctx0/p0', 500]]),
+    );
+    // (1000 + 2000 − 500) / 1000 = 2.5
+    expect(out[0].videoTime).toBe(2.5);
+  });
+
+  it('clamps to 0 when the statement ran before the video started', () => {
+    const out = stampVideoTimes(
+      [mk({ t: 100, pageId: 'ctx0/p0' })],
+      1000,
+      new Map([['ctx0/p0', 5000]]),
+    );
+    expect(out[0].videoTime).toBe(0);
+  });
+
+  it('recurses into children, resolving each by its own pageId', () => {
+    const child = mk({ seq: 2, t: 1000, pageId: 'ctx1/p0' });
+    const out = stampVideoTimes(
+      [mk({ seq: 1, t: 1000, pageId: 'ctx0/p0', children: [child] })],
+      1000,
+      new Map([
+        ['ctx0/p0', 1000], // → (1000+1000-1000)/1000 = 1.0
+        ['ctx1/p0', 1500], // → (1000+1000-1500)/1000 = 0.5
+      ]),
+    );
+    expect(out[0].videoTime).toBe(1);
+    expect(out[0].children[0].videoTime).toBe(0.5);
+  });
+
+  it('leaves videoTime unset when the statement has no pageId', () => {
+    const out = stampVideoTimes([mk({ t: 100 })], 1000, new Map([['ctx0/p0', 0]]));
+    expect(out[0].videoTime).toBeUndefined();
+  });
+
+  it('leaves videoTime unset when the page recorded no video (no anchor)', () => {
+    const out = stampVideoTimes([mk({ t: 100, pageId: 'ctx9/p9' })], 1000, new Map());
+    expect(out[0].videoTime).toBeUndefined();
+  });
+
+  it('leaves videoTime unset when the test start is unknown', () => {
+    const out = stampVideoTimes(
+      [mk({ t: 100, pageId: 'ctx0/p0' })],
+      undefined,
+      new Map([['ctx0/p0', 0]]),
+    );
+    expect(out[0].videoTime).toBeUndefined();
+  });
+
+  it('does not mutate the input', () => {
+    const stmt = mk({ t: 2000, pageId: 'ctx0/p0' });
+    stampVideoTimes([stmt], 1000, new Map([['ctx0/p0', 500]]));
+    expect(stmt).not.toHaveProperty('videoTime');
   });
 });

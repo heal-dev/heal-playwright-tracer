@@ -52,7 +52,7 @@ import type {
   TestSummary,
   TraceResponse,
 } from './local-server-api-types';
-import { loadTrace, rewriteScreenshots } from './ndjson-trace-loader';
+import { loadTrace, rewriteScreenshots, stampVideoTimes } from './ndjson-trace-loader';
 
 const EXEC_BODY_MAX_BYTES = 64 * 1024;
 
@@ -656,9 +656,26 @@ export class LocalViewerServer {
     const baseAssetUrl = `/api/executions/${encodeURIComponent(rawExecutionId)}/asset/${encodeURIComponent(rawTestId)}/${attempt}`;
     const baseSourceUrl = `/api/executions/${encodeURIComponent(rawExecutionId)}/source/${encodeURIComponent(rawTestId)}/${attempt}`;
 
-    const rewritten = rewriteScreenshots(
-      trace.statements,
-      (filename) => `${baseScreenshotUrl}/${encodeURIComponent(filename)}`,
+    // Per-page video-start anchor, keyed by pageId — drives each
+    // statement's `videoTime`. Sourced from the video attachments the
+    // reporter stamped with `pageId` / `videoStartWallMs`.
+    const videoStartByPageId = new Map<string, number>();
+    for (const a of summary.attachments) {
+      if (
+        a.contentType.toLowerCase().startsWith('video/') &&
+        a.pageId !== undefined &&
+        a.videoStartWallMs !== undefined
+      ) {
+        videoStartByPageId.set(a.pageId, a.videoStartWallMs);
+      }
+    }
+    const rewritten = stampVideoTimes(
+      rewriteScreenshots(
+        trace.statements,
+        (filename) => `${baseScreenshotUrl}/${encodeURIComponent(filename)}`,
+      ),
+      trace.header.startedAt,
+      videoStartByPageId,
     );
     const encodePath = (relPath: string): string =>
       relPath
@@ -671,6 +688,10 @@ export class LocalViewerServer {
       name: a.name,
       path: a.path,
       contentType: a.contentType,
+      ...(a.pageId !== undefined ? { pageId: a.pageId } : {}),
+      ...(a.videoStartWallMs !== undefined ? { videoStartWallMs: a.videoStartWallMs } : {}),
+      ...(a.pageName !== undefined ? { pageName: a.pageName } : {}),
+      ...(a.pageUrl !== undefined ? { pageUrl: a.pageUrl } : {}),
     }));
     const source: SourceRef[] = trace.source.map((f) => {
       let bytes = 0;
