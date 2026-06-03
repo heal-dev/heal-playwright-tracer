@@ -42,6 +42,11 @@ const base = process.env.INTEGRATION_BASE_URL as string;
 
 test('records a video for the main page', async ({ page }) => {
   await page.goto(base + '/');
+  // Keep the recording alive briefly so Playwright reliably flushes at
+  // least one video frame. A page that navigates and closes instantly
+  // can yield an empty/absent video on some Playwright versions under
+  // load (notably 1.50 in CI), which would drop the attachment.
+  await page.waitForTimeout(1000);
 });
 `;
 
