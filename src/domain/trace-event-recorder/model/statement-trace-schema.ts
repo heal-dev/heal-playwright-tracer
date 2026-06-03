@@ -30,7 +30,7 @@
 // Heal autopilot agent, humans debugging a failing test) should
 // import these types to stay in sync with the file format.
 
-export const HEAL_TRACE_SCHEMA_VERSION = 3;
+export const HEAL_TRACE_SCHEMA_VERSION = 4;
 
 /**
  * One line of a `heal-traces.ndjson` file. Discriminated by `kind`.
@@ -182,7 +182,22 @@ export interface Statement {
   duration: number;
   /** Relative start time in ms (from test.startedAt). */
   t: number;
+  /**
+   * URL of the page this statement ran against. For statements that
+   * call a patched Locator action / wrapped assertion / patched Page
+   * navigation, this is the targeted page's URL captured at action
+   * time (more specific than the test's "current page"). Otherwise it
+   * falls back to the enter-time `currentPage` URL, if any.
+   */
   pageUrl?: string;
+  /**
+   * Stable id of the page this statement acted on — joins to the
+   * matching `TestAttachment.pageId` so a consumer can resolve which
+   * recorded video this statement appears in. Present only for
+   * statements that touched a page (action / assertion / navigation);
+   * absent for pure JS/TS statements. See `EnterEvent.pageId`.
+   */
+  pageId?: string;
 
   /** Snapshot of bindings introduced by `const`/`let` that succeeded. */
   vars?: Record<string, unknown>;
@@ -276,6 +291,21 @@ export interface TestAttachment {
    * presence rules as `pageName`.
    */
   pageUrl?: string;
+  /**
+   * Video attachments only: stable id of the page that recorded this
+   * video (`ctx0/p0`, …). Joins to each `Statement.pageId`, so a
+   * consumer can resolve which video a statement appears in. Same
+   * best-effort presence rules as `pageName`; absent on traces written
+   * before page attribution existed.
+   */
+  pageId?: string;
+  /**
+   * Video attachments only: `Date.now()` when the recording page was
+   * first registered — the Tier 1 video-start anchor. A consumer
+   * computes the offset of a statement into this video as
+   * `(statement.wallTime - videoStartWallMs) / 1000`.
+   */
+  videoStartWallMs?: number;
 }
 
 /**

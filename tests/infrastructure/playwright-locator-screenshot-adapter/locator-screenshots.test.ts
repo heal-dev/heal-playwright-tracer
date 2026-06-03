@@ -5,7 +5,7 @@
  */
 
 import * as fs from 'fs';
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // The adapter now takes `onScreenshotWritten` as an explicit argument,
 // so the module-level mock the old test had is gone. Each test passes
@@ -15,6 +15,11 @@ import {
   startLocatorScreenshotCapture,
   expectScreenshotHelper,
 } from '../../../src/infrastructure/playwright-locator-screenshot-adapter';
+import {
+  setActivePageStamper,
+  type PageStamper,
+} from '../../../src/infrastructure/playwright-page-registry-adapter';
+import { setActiveCaptureSession } from '../../../src/infrastructure/playwright-locator-screenshot-adapter/locator-patch';
 import { HEAL_EXPECT_SCREENSHOT } from '../../../src/domain/trace-event-recorder/model/global-names';
 
 const mockSetScreenshot = vi.fn<(filename: string) => void>();
@@ -403,6 +408,15 @@ function makeFakeExpectLocator() {
   const log: CallLog[] = [];
   const screenshotPaths: string[] = [];
 
+  // Class (not a plain object) so its prototype is ProbeLocator.prototype,
+  // never Object.prototype — see the note in fakePage.locator below.
+  class ProbeLocator {
+    async click() {}
+    page() {
+      return fakePage;
+    }
+  }
+
   const fakePage = {
     async evaluate(fn: unknown, arg: unknown) {
       log.push({ name: 'page.evaluate', args: [arg] });
@@ -414,8 +428,11 @@ function makeFakeExpectLocator() {
     },
     locator(_selector: string) {
       // Needed only so startLocatorScreenshotCapture can probe the
-      // prototype; returns a minimal object.
-      return { click: async () => {}, page: () => fakePage };
+      // prototype. MUST be a class instance (not a plain object): the
+      // patch grabs `Object.getPrototypeOf(...)`, and a plain object
+      // would resolve to `Object.prototype`, marking it patched and
+      // poisoning the global marker for every other test's locator.
+      return new ProbeLocator();
     },
   };
 
@@ -617,5 +634,105 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
 
     await expect(expectScreenshotHelper(locator)).resolves.toBeUndefined();
+  });
+});
+
+// --- page-attribution stamp (runs inside the same patched action /
+// expect helper as the screenshot capture, but independent of it) -----------
+
+describe('locator-patch — page-attribution stamp', () => {
+  beforeEach(() => {
+    mockSetScreenshot.mockReset();
+    setActivePageStamper(null);
+  });
+  afterEach(() => setActivePageStamper(null));
+
+  it('invokes the active stamper with the action target page BEFORE the action runs', async () => {
+    const { fakePage, FakeLocator, log } = makeFakePageAndLocatorClass();
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    const stampedWith: unknown[] = [];
+    setActivePageStamper((page) => {
+      log.push({ name: 'page-stamp', args: [] });
+      stampedWith.push(page);
+    });
+
+    const loc = new FakeLocator();
+    const result = await loc.click();
+
+    expect(result).toBe('clicked');
+    expect(stampedWith).toEqual([fakePage]);
+    // The stamp is the very first thing the patched method does — before
+    // any capture step and before the real action.
+    expect(log[0].name).toBe('page-stamp');
+    expect(log.findIndex((c) => c.name === 'page-stamp')).toBeLessThan(
+      log.findIndex((c) => c.name === 'locator.click'),
+    );
+  });
+
+  it('swallows a throwing stamper — the action still runs and returns', async () => {
+    const { fakePage, FakeLocator } = makeFakePageAndLocatorClass();
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    setActivePageStamper(() => {
+      throw new Error('stamp boom');
+    });
+
+    const loc = new FakeLocator();
+    await expect(loc.click()).resolves.toBe('clicked');
+  });
+
+  it('no-ops when no stamper is active — action runs normally', async () => {
+    const { fakePage, FakeLocator } = makeFakePageAndLocatorClass();
+    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    setActivePageStamper(null);
+
+    const loc = new FakeLocator();
+    await expect(loc.click()).resolves.toBe('clicked');
+  });
+});
+
+describe('expectScreenshotHelper — page-attribution stamp', () => {
+  beforeEach(() => {
+    mockSetScreenshot.mockReset();
+    setActivePageStamper(null);
+    delete (globalThis as Record<string, unknown>)[HEAL_EXPECT_SCREENSHOT];
+  });
+  afterEach(() => setActivePageStamper(null));
+
+  it('stamps the assertion target page even when screenshots are OFF (no active session)', async () => {
+    // The decoupling guarantee: page attribution must work even when the
+    // screenshot capture session is absent. Clear the session, install
+    // only a stamper, and assert the page is still stamped with no
+    // screenshot taken.
+    setActiveCaptureSession(null);
+    const { locator, fakePage, log } = makeFakeExpectLocator();
+    const stampedWith: unknown[] = [];
+    setActivePageStamper(((page) => stampedWith.push(page)) as PageStamper);
+
+    await expectScreenshotHelper(locator);
+
+    expect(stampedWith).toEqual([fakePage]);
+    expect(log).toEqual([]); // no capture pipeline ran
+    expect(mockSetScreenshot).not.toHaveBeenCalled();
+  });
+
+  it('swallows a throwing stamper in the expect helper', async () => {
+    setActiveCaptureSession(null);
+    const { locator } = makeFakeExpectLocator();
+    setActivePageStamper(() => {
+      throw new Error('stamp boom');
+    });
+
+    await expect(expectScreenshotHelper(locator)).resolves.toBeUndefined();
+  });
+
+  it('does not stamp for a non-Locator target', async () => {
+    setActiveCaptureSession(null);
+    const stampedWith: unknown[] = [];
+    setActivePageStamper(((page) => stampedWith.push(page)) as PageStamper);
+
+    await expectScreenshotHelper('not-a-locator');
+    await expectScreenshotHelper({ nope: true });
+
+    expect(stampedWith).toEqual([]);
   });
 });

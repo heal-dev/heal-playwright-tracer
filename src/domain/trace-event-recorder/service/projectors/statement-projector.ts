@@ -141,10 +141,7 @@ export class StatementProjector implements TraceEventConsumer {
         if (!live) return;
         live.stmt.duration = event.duration;
         if (event.vars) live.stmt.vars = event.vars;
-        // Screenshot may have been stamped onto the enter event
-        // after the enter was emitted (locator-screenshots
-        // feature); pick it up now.
-        if (live.enter.screenshot) live.stmt.screenshot = live.enter.screenshot;
+        applyLateEnterFields(live.stmt, live.enter);
         this.maybeEmitRoot(event.enterSeq, live);
         return;
       }
@@ -156,7 +153,7 @@ export class StatementProjector implements TraceEventConsumer {
         live.stmt.status = 'threw';
         live.stmt.duration = event.duration;
         live.stmt.error = event.error;
-        if (live.enter.screenshot) live.stmt.screenshot = live.enter.screenshot;
+        applyLateEnterFields(live.stmt, live.enter);
         this.maybeEmitRoot(event.enterSeq, live);
         return;
       }
@@ -207,7 +204,7 @@ export class StatementProjector implements TraceEventConsumer {
       live.stmt.status = 'threw';
       live.stmt.duration = Math.max(0, testDuration - live.stmt.t);
       live.stmt.error = error;
-      if (live.enter.screenshot) live.stmt.screenshot = live.enter.screenshot;
+      applyLateEnterFields(live.stmt, live.enter);
       sortChildrenDeep(live.stmt);
       this.output.write({ kind: 'statement', statement: live.stmt });
       this.dropSubtree(live.stmt);
@@ -251,8 +248,24 @@ function createStatement(event: EnterEvent, index: number): Statement {
     children: [],
   };
   if (event.screenshot) stmt.screenshot = event.screenshot;
+  if (event.pageId) stmt.pageId = event.pageId;
   if (event.leadingComment != null) stmt.leadingComment = event.leadingComment;
   return stmt;
+}
+
+/**
+ * Copy fields that may have been stamped onto the enter event AFTER
+ * it was first projected — the locator-screenshots feature mutates
+ * `screenshot`, and the page-attribution feature mutates `pageId` /
+ * `pageUrl` mid-statement (see `EnterEvent` docs). Re-reading them at
+ * ok/throw time picks up those late mutations. `pageUrl` overrides the
+ * enter-time value because an action stamp is more specific than the
+ * recorder's global current-page read.
+ */
+function applyLateEnterFields(stmt: Statement, enter: EnterEvent): void {
+  if (enter.screenshot) stmt.screenshot = enter.screenshot;
+  if (enter.pageId) stmt.pageId = enter.pageId;
+  if (enter.pageUrl !== undefined) stmt.pageUrl = enter.pageUrl;
 }
 
 function sortChildrenDeep(stmt: Statement): void {

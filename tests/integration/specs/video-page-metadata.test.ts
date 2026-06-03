@@ -111,6 +111,14 @@ describe('integration: video page metadata in test-attachments', () => {
     // then is the integration base URL the spec navigated to.
     expect(typeof video.pageUrl).toBe('string');
     expect(video.pageUrl?.startsWith('http')).toBe(true);
+
+    // The built-in page is the registry's primary page → ctx0/p0, and
+    // it carries the Tier 1 video-start anchor. The built-in video has
+    // no captured path (its context is still open at teardown), so this
+    // arrived via the positional fallback.
+    expect(video.pageId).toBe('ctx0/p0');
+    expect(typeof video.videoStartWallMs).toBe('number');
+    expect(video.videoStartWallMs).toBeGreaterThan(0);
   });
 
   it('does not stamp pageName/pageUrl on non-video attachments', () => {

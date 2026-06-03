@@ -32,6 +32,10 @@
 // patch and our restore, theirs stays in place.
 
 import type { APIRequest, APIRequestContext, Browser, BrowserContext, Page } from 'playwright';
+import {
+  watchPageVideo,
+  type PageRegistry,
+} from '../../infrastructure/playwright-page-registry-adapter';
 
 /**
  * Capture sessions implement just enough of the `Wireable`
@@ -57,15 +61,52 @@ export interface WireAllPagesOptions {
    * api-request contexts created inside the test body are wired.
    */
   apiRequest?: APIRequest;
+  /**
+   * Optional per-test page registry. When supplied, every context and
+   * page this helper observes (existing, newly-created, and popups via
+   * `context.on('page')`) is assigned a stable id at creation time.
+   * That gives an accurate per-page video-start anchor and lets the
+   * fixture enumerate every page at teardown to map videos back to
+   * page ids. Page attribution still works without it via the
+   * action-time fallback in the stamper, just with first-action-time
+   * (rather than creation-time) registration.
+   */
+  pageRegistry?: PageRegistry;
+}
+
+/**
+ * Register a context and all its current pages in the registry, and
+ * subscribe to future pages (popups) opened in it. Best-effort: a
+ * Playwright call throwing here must never break wiring.
+ */
+function registerContext(registry: PageRegistry, ctx: BrowserContext): void {
+  try {
+    registry.ensureContextId(ctx);
+    for (const p of ctx.pages()) {
+      registry.ensurePageId(p);
+      watchPageVideo(registry, p);
+    }
+    ctx.on('page', (p) => {
+      try {
+        registry.ensurePageId(p);
+        watchPageVideo(registry, p);
+      } catch {
+        // A page event for an already-closing context — ignore.
+      }
+    });
+  } catch {
+    // Context already closed / detached — nothing to register.
+  }
 }
 
 /** Returns a `restore()` thunk that undoes all patches. */
 export function wireAllPages(sessions: WireableSession[], opts: WireAllPagesOptions): () => void {
-  const { browser, apiRequest } = opts;
+  const { browser, apiRequest, pageRegistry } = opts;
 
   // (1) Wire every existing BrowserContext.
   for (const ctx of browser.contexts()) {
     for (const session of sessions) session.attachToContext(ctx);
+    if (pageRegistry) registerContext(pageRegistry, ctx);
   }
 
   // (2) Patch newly-created contexts. We hold references to the
@@ -79,6 +120,7 @@ export function wireAllPages(sessions: WireableSession[], opts: WireAllPagesOpti
   browser.newContext = async (...args: Parameters<Browser['newContext']>) => {
     const ctx = await originalNewContext.call(browser, ...args);
     for (const session of sessions) session.attachToContext(ctx);
+    if (pageRegistry) registerContext(pageRegistry, ctx);
     return ctx;
   };
 
@@ -86,6 +128,7 @@ export function wireAllPages(sessions: WireableSession[], opts: WireAllPagesOpti
     const page = await originalNewPage.call(browser, ...args);
     const ctx = page.context();
     for (const session of sessions) session.attachToContext(ctx);
+    if (pageRegistry) registerContext(pageRegistry, ctx);
     return page;
   };
 

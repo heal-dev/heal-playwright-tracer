@@ -193,7 +193,7 @@ describe('LocalViewerServer', () => {
       tests: { id: string; title: string; playwrightTestId: string; attempt: number }[];
     };
     expect(json.executionId).toBe(EXEC);
-    expect(json.schemaVersion).toBe(3);
+    expect(json.schemaVersion).toBe(4);
     expect(json.tests).toHaveLength(1);
     expect(json.tests[0]).toMatchObject({
       id: `${TID}_${ATTEMPT}`,

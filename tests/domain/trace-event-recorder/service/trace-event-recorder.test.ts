@@ -163,6 +163,58 @@ describe('createRecorder', () => {
     expect(types).toEqual(['meta']);
   });
 
+  it('setCurrentStatementPage stamps pageId and pageUrl on the top-of-stack enter event', () => {
+    const { rt, events } = buildHarness();
+    rt.reset();
+    rt.__enter({
+      file: 'f.ts',
+      startLine: 1,
+      startCol: 0,
+      endLine: 1,
+      endCol: 1,
+      kind: 'expression',
+      scope: 'test',
+      hasAwait: false,
+      source: 'await btn.click()',
+    });
+    rt.setCurrentStatementPage('ctx0/p0', 'https://app.test/');
+    rt.__ok();
+
+    const enter = events.find((e: any) => e.type === 'enter');
+    expect(enter.pageId).toBe('ctx0/p0');
+    expect(enter.pageUrl).toBe('https://app.test/');
+  });
+
+  it('setCurrentStatementPage leaves pageUrl untouched when no url is passed', () => {
+    const { rt, events } = buildHarness();
+    rt.reset();
+    rt.__enter({
+      file: 'f.ts',
+      startLine: 1,
+      startCol: 0,
+      endLine: 1,
+      endCol: 1,
+      kind: 'expression',
+      scope: 'test',
+      hasAwait: false,
+      source: 'await btn.click()',
+    });
+    rt.setCurrentStatementPage('ctx1/p2');
+    rt.__ok();
+
+    const enter = events.find((e: any) => e.type === 'enter');
+    expect(enter.pageId).toBe('ctx1/p2');
+    expect(enter.pageUrl).toBeUndefined();
+  });
+
+  it('setCurrentStatementPage is a no-op when the stack is empty', () => {
+    const { rt, events } = buildHarness();
+    rt.reset();
+    expect(() => rt.setCurrentStatementPage('ctx0/p0', 'x')).not.toThrow();
+    const types = events.map((e: any) => e.type);
+    expect(types).toEqual(['meta']);
+  });
+
   it('getCurrentStatementSeq returns the top-of-stack seq while a statement is active', () => {
     const { rt } = buildHarness();
     rt.reset();

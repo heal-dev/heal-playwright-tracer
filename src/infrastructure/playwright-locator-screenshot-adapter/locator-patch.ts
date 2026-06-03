@@ -28,6 +28,7 @@
 
 import type { Page } from 'playwright';
 import type { ScreenshotCaptureSession } from './screenshot-capture-session';
+import { getActivePageStamper } from '../playwright-page-registry-adapter';
 import { log } from '../../util/logger';
 
 // Locator action methods that will be highlighted and screenshotted.
@@ -103,6 +104,16 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
         } | null>;
       };
       const pg = typeof self.page === 'function' ? self.page() : null;
+      // Attribute this statement to the page the action targets. Fires
+      // BEFORE the action runs, so the stamped URL is the page's origin
+      // URL (where the action happened), not wherever it navigates to.
+      if (pg) {
+        try {
+          getActivePageStamper()?.(pg);
+        } catch (err) {
+          log.warn(`page stamp failed for locator.${name}`, err);
+        }
+      }
       const session = activeSession;
       const cleanup =
         pg && session
