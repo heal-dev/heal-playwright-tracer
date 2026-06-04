@@ -257,6 +257,68 @@ describe('LocalViewerServer', () => {
     expect(res.headers.get('content-type')).toBe('video/webm');
   });
 
+  it('advertises Accept-Ranges on a full asset response', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+  });
+
+  it('honors a Range request with 206 Partial Content (video timeline seeking)', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+      { headers: { Range: 'bytes=2-5' } },
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-type')).toBe('video/webm');
+    // video.webm is 8 bytes: bytes 2-5 inclusive = 4 bytes.
+    expect(res.headers.get('content-range')).toBe('bytes 2-5/8');
+    expect(res.headers.get('content-length')).toBe('4');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    const body = new Uint8Array(await res.arrayBuffer());
+    expect(body).toEqual(new Uint8Array([0xdf, 0xa3, 0x9f, 0x42]));
+  });
+
+  it('clamps an open-ended Range to the last byte', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+      { headers: { Range: 'bytes=4-' } },
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 4-7/8');
+    expect(res.headers.get('content-length')).toBe('4');
+  });
+
+  it('serves a suffix Range (last N bytes)', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+      { headers: { Range: 'bytes=-3' } },
+    );
+    expect(res.status).toBe(206);
+    expect(res.headers.get('content-range')).toBe('bytes 5-7/8');
+    expect(res.headers.get('content-length')).toBe('3');
+  });
+
+  it('answers 416 for an unsatisfiable Range', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+      { headers: { Range: 'bytes=99-200' } },
+    );
+    expect(res.status).toBe(416);
+    expect(res.headers.get('content-range')).toBe('bytes */8');
+    await res.arrayBuffer();
+  });
+
+  it('ignores a malformed Range header and serves the full file', async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/videos/video.webm`,
+      { headers: { Range: 'bytes=abc' } },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-length')).toBe('8');
+  });
+
   it('GET /api/executions/:id/tests/:tid/:attempt carries attachments with new-layout URLs', async () => {
     const res = await fetch(`${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}`);
     const trace = (await res.json()) as {
