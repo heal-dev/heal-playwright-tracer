@@ -137,7 +137,47 @@ const isExecRequestBody = (body: unknown): body is { bin: string; args: string[]
   );
 };
 
-const streamFile = (res: http.ServerResponse, filePath: string): void => {
+/**
+ * Parse a single-range HTTP `Range` header against a known file size.
+ * Returns the inclusive `[start, end]` byte offsets, `null` when no
+ * usable range is present (caller should fall back to a full 200), or
+ * `'unsatisfiable'` when the range is syntactically valid but out of
+ * bounds (caller must answer 416). Only the common single `bytes=`
+ * form is supported — multipart/multi-range is intentionally not, as
+ * media elements never need it for timeline seeking.
+ */
+const parseRange = (
+  rangeHeader: string | undefined,
+  size: number,
+): { start: number; end: number } | null | 'unsatisfiable' => {
+  if (!rangeHeader) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  if (!match) return null;
+  const [, rawStart, rawEnd] = match;
+  if (rawStart === '' && rawEnd === '') return null;
+
+  let start: number;
+  let end: number;
+  if (rawStart === '') {
+    // Suffix range: last N bytes.
+    const suffix = Number.parseInt(rawEnd, 10);
+    if (suffix === 0) return 'unsatisfiable';
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number.parseInt(rawStart, 10);
+    end = rawEnd === '' ? size - 1 : Number.parseInt(rawEnd, 10);
+  }
+
+  if (start > end || start >= size) return 'unsatisfiable';
+  // Clamp an over-long end to the last byte (browsers often send an
+  // open-ended `bytes=0-` or an end past EOF).
+  if (end >= size) end = size - 1;
+
+  return { start, end };
+};
+
+const streamFile = (res: http.ServerResponse, filePath: string, rangeHeader?: string): void => {
   let size: number;
   try {
     size = statSync(filePath).size;
@@ -146,9 +186,40 @@ const streamFile = (res: http.ServerResponse, filePath: string): void => {
 
     return;
   }
+
+  const contentType = getMime(filePath);
+  const range = parseRange(rangeHeader, size);
+
+  if (range === 'unsatisfiable') {
+    res.writeHead(416, {
+      'Content-Range': `bytes */${String(size)}`,
+      'Accept-Ranges': 'bytes',
+    });
+    res.end();
+
+    return;
+  }
+
+  // `Accept-Ranges: bytes` advertises range support so media elements
+  // know they can seek; sent on every response, partial or full.
+  if (range) {
+    const { start, end } = range;
+    res.writeHead(206, {
+      'Content-Type': contentType,
+      'Content-Length': end - start + 1,
+      'Content-Range': `bytes ${String(start)}-${String(end)}/${String(size)}`,
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-cache',
+    });
+    createReadStream(filePath, { start, end }).pipe(res);
+
+    return;
+  }
+
   res.writeHead(200, {
-    'Content-Type': getMime(filePath),
+    'Content-Type': contentType,
     'Content-Length': size,
+    'Accept-Ranges': 'bytes',
     'Cache-Control': 'no-cache',
   });
   createReadStream(filePath).pipe(res);
@@ -328,6 +399,7 @@ export class LocalViewerServer {
     );
     if (screenshotMatch) {
       await this.serveScreenshot(
+        req,
         res,
         screenshotMatch[1],
         screenshotMatch[2],
@@ -340,14 +412,21 @@ export class LocalViewerServer {
 
     const assetMatch = /^\/api\/executions\/([^/]+)\/asset\/([^/]+)\/(\d+)\/(.+)$/.exec(pathname);
     if (assetMatch) {
-      await this.serveAsset(res, assetMatch[1], assetMatch[2], assetMatch[3], assetMatch[4]);
+      await this.serveAsset(req, res, assetMatch[1], assetMatch[2], assetMatch[3], assetMatch[4]);
 
       return;
     }
 
     const sourceMatch = /^\/api\/executions\/([^/]+)\/source\/([^/]+)\/(\d+)\/(.+)$/.exec(pathname);
     if (sourceMatch) {
-      await this.serveSource(res, sourceMatch[1], sourceMatch[2], sourceMatch[3], sourceMatch[4]);
+      await this.serveSource(
+        req,
+        res,
+        sourceMatch[1],
+        sourceMatch[2],
+        sourceMatch[3],
+        sourceMatch[4],
+      );
 
       return;
     }
@@ -358,7 +437,7 @@ export class LocalViewerServer {
       return;
     }
 
-    await this.serveStatic(res, pathname);
+    await this.serveStatic(req, res, pathname);
   }
 
   private async serveExecSpawn(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -720,6 +799,7 @@ export class LocalViewerServer {
   }
 
   private async serveAsset(
+    req: http.IncomingMessage,
     res: http.ServerResponse,
     rawExecutionId: string,
     rawTestId: string,
@@ -763,10 +843,11 @@ export class LocalViewerServer {
 
       return;
     }
-    streamFile(res, filePath);
+    streamFile(res, filePath, req.headers.range);
   }
 
   private async serveSource(
+    req: http.IncomingMessage,
     res: http.ServerResponse,
     rawExecutionId: string,
     rawTestId: string,
@@ -833,10 +914,11 @@ export class LocalViewerServer {
 
       return;
     }
-    streamFile(res, filePath);
+    streamFile(res, filePath, req.headers.range);
   }
 
   private async serveScreenshot(
+    req: http.IncomingMessage,
     res: http.ServerResponse,
     rawExecutionId: string,
     rawTestId: string,
@@ -880,10 +962,14 @@ export class LocalViewerServer {
 
       return;
     }
-    streamFile(res, filePath);
+    streamFile(res, filePath, req.headers.range);
   }
 
-  private async serveStatic(res: http.ServerResponse, pathname: string): Promise<void> {
+  private async serveStatic(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    pathname: string,
+  ): Promise<void> {
     const rel = pathname === '/' ? '/index.html' : pathname;
     if (rel.includes('..')) {
       sendText(res, 400, 'Path traversal rejected');
@@ -910,7 +996,7 @@ export class LocalViewerServer {
 
           return;
         }
-        streamFile(res, path.join(this.options.bundleDir, 'index.html'));
+        streamFile(res, path.join(this.options.bundleDir, 'index.html'), req.headers.range);
 
         return;
       }
@@ -920,10 +1006,10 @@ export class LocalViewerServer {
 
         return;
       }
-      streamFile(res, path.join(this.options.bundleDir, 'index.html'));
+      streamFile(res, path.join(this.options.bundleDir, 'index.html'), req.headers.range);
 
       return;
     }
-    streamFile(res, filePath);
+    streamFile(res, filePath, req.headers.range);
   }
 }
