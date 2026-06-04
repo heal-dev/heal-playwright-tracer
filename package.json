@@ -53,6 +53,7 @@
   "scripts": {
     "clean": "rm -rf dist",
     "build": "npm run clean && tsc -p tsconfig.json",
+    "gen:viewer-types": "node scripts/gen-viewer-types.js",
     "refresh:viewer": "node scripts/refresh-viewer-bundle.js",
     "test": "vitest run",
     "test:watch": "vitest",
