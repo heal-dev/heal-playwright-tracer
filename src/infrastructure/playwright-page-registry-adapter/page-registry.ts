@@ -48,6 +48,15 @@ export interface PageEntry {
    * the video with this page's id. Absent until/unless resolved.
    */
   videoRecordingPath?: string;
+  /**
+   * Resolves to this page's recording-time video path once its context
+   * closes (or `null` if it never resolves / recordVideo is off). Lets
+   * the fixture await a manual context's video at teardown and
+   * auto-attach the file — so a manual context's video lands in
+   * heal-traces without the test calling `testInfo.attach` itself.
+   * Settled by `watchPageVideo`.
+   */
+  videoPathPromise?: Promise<string | null>;
 }
 
 export class PageRegistry {
@@ -112,6 +121,16 @@ export class PageRegistry {
   setVideoRecordingPath(page: Page, videoRecordingPath: string): void {
     const entry = this.entriesByPage.get(page);
     if (entry) entry.videoRecordingPath = videoRecordingPath;
+  }
+
+  /**
+   * Store the promise that resolves to a page's recording-time video
+   * path once its context closes. No-op for an unregistered page.
+   * Called at registration by `watchPageVideo`.
+   */
+  setVideoPathPromise(page: Page, videoPathPromise: Promise<string | null>): void {
+    const entry = this.entriesByPage.get(page);
+    if (entry) entry.videoPathPromise = videoPathPromise;
   }
 
   /** Every page seen this test, in registration order. */

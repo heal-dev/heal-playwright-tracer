@@ -76,6 +76,25 @@ describe('PageRegistry', () => {
     expect(reg.list().map((e) => e.page)).toEqual([p0, p1]);
   });
 
+  it('setVideoPathPromise stores the promise on the entry; resolves to the path', async () => {
+    const reg = new PageRegistry();
+    const page = makePage(makeContext());
+    reg.ensurePageId(page);
+    expect(reg.entryForPage(page)?.videoPathPromise).toBeUndefined();
+
+    const promise = Promise.resolve('/rec/video.webm');
+    reg.setVideoPathPromise(page, promise);
+    expect(reg.entryForPage(page)?.videoPathPromise).toBe(promise);
+    await expect(reg.entryForPage(page)?.videoPathPromise).resolves.toBe('/rec/video.webm');
+  });
+
+  it('setVideoPathPromise is a no-op for an unregistered page', () => {
+    const reg = new PageRegistry();
+    const page = makePage(makeContext()); // never ensurePageId'd
+    expect(() => reg.setVideoPathPromise(page, Promise.resolve(null))).not.toThrow();
+    expect(reg.entryForPage(page)).toBeUndefined();
+  });
+
   it('stamps videoStartWallMs from the injected clock at registration time', () => {
     let t = 1_000;
     const reg = new PageRegistry(() => t);

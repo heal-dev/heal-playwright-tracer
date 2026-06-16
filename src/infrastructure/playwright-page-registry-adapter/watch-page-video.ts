@@ -40,10 +40,23 @@ export function watchPageVideo(registry: PageRegistry, page: Page): void {
   if (!video || typeof video.path !== 'function') return;
   const resolvePath = video.path.bind(video);
 
-  on.call(page, 'close', () => {
-    Promise.resolve(resolvePath()).then(
-      (resolved) => registry.setVideoRecordingPath(page, resolved),
-      (err) => log.warn('video.path() did not resolve after page close', err),
-    );
+  // Expose a promise the fixture can await at teardown: it resolves to
+  // the recording-time path once the page's context closes (or `null` if
+  // it never settles). That lets the fixture auto-attach a manual
+  // context's video without the test calling `testInfo.attach`.
+  const settled = new Promise<string | null>((resolve) => {
+    on.call(page, 'close', () => {
+      Promise.resolve(resolvePath()).then(
+        (resolved) => {
+          registry.setVideoRecordingPath(page, resolved);
+          resolve(resolved);
+        },
+        (err) => {
+          log.warn('video.path() did not resolve after page close', err);
+          resolve(null);
+        },
+      );
+    });
   });
+  registry.setVideoPathPromise(page, settled);
 }

@@ -91,6 +91,7 @@ import { withTimeout } from '../../util/with-timeout';
 import { log } from '../../util/logger';
 import { wireAllPages, type WireableSession } from './wire-all-pages';
 import { buildVideoPages } from './build-video-pages';
+import { autoAttachManualVideos } from './auto-attach-manual-videos';
 import { HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
 
@@ -399,6 +400,16 @@ export const test = base.extend<TraceFixtures>({
         //
         // Best-effort: any failure just leaves the videos un-enriched.
         // Costs nothing when `recordVideo` is off (`page.video()` null).
+        //
+        // Auto-capture manual-context videos before building the
+        // videoPages list, so a `browser.newContext` video the test never
+        // attached itself still lands in `result.attachments` for the
+        // reporter to copy. See `autoAttachManualVideos`.
+        await autoAttachManualVideos(pageRegistry.list(), page, videoAttachMap, {
+          attach: (name, options) => testInfo.attach(name, options),
+          timeoutMs: lifecycleTimeoutMs,
+        });
+
         try {
           const videoPages = buildVideoPages(pageRegistry.list(), page, videoAttachMap);
           if (videoPages.length > 0) {

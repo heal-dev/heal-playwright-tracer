@@ -72,4 +72,35 @@ describe('watchPageVideo', () => {
     await flush();
     expect(reg.entryForPage(page)?.videoRecordingPath).toBeUndefined();
   });
+
+  it('exposes a videoPathPromise at registration that resolves to the path on close', async () => {
+    const reg = new PageRegistry();
+    const page = makePage({ video: { path: () => Promise.resolve('/out/video-xyz.webm') } });
+    reg.ensurePageId(page);
+    watchPageVideo(reg, page);
+
+    const promise = reg.entryForPage(page)?.videoPathPromise;
+    expect(promise).toBeInstanceOf(Promise);
+    page.fireClose();
+    await expect(promise).resolves.toBe('/out/video-xyz.webm');
+  });
+
+  it('resolves videoPathPromise to null when path() rejects', async () => {
+    const reg = new PageRegistry();
+    const page = makePage({ video: { path: () => Promise.reject(new Error('discarded')) } });
+    reg.ensurePageId(page);
+    watchPageVideo(reg, page);
+
+    const promise = reg.entryForPage(page)?.videoPathPromise;
+    page.fireClose();
+    await expect(promise).resolves.toBeNull();
+  });
+
+  it('does not set a videoPathPromise for a page with no recorded video', () => {
+    const reg = new PageRegistry();
+    const page = makePage({ video: null });
+    reg.ensurePageId(page);
+    watchPageVideo(reg, page);
+    expect(reg.entryForPage(page)?.videoPathPromise).toBeUndefined();
+  });
 });
