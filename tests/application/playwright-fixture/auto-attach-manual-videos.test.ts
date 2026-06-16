@@ -180,6 +180,76 @@ describe('autoAttachManualVideos', () => {
     expect(sharedCtx.close).toHaveBeenCalledTimes(1);
   });
 
+  it('never closes the primary context (a non-primary page that shares it)', async () => {
+    // A popup opened from the built-in page lives in the PRIMARY context.
+    // Playwright owns that context (closes it after the fixture), so we
+    // must not close it here — but the popup's own video still attaches.
+    const primaryCtx = makeContext();
+    const primary = makePage(primaryCtx);
+    const popup = makePage(primaryCtx); // same, primary, context
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({ page: popup, pageId: 'ctx0/p1', videoRecordingPath: '/rec/popup.webm' }),
+      ],
+      primary,
+      new Map(),
+      { attach, timeoutMs: 1000, fileExists: ALWAYS },
+    );
+
+    // The shared primary context is left untouched...
+    expect(primaryCtx.close).not.toHaveBeenCalled();
+    // ...yet the popup's distinct recording is still attached.
+    expect(attach).toHaveBeenCalledWith('page-video-ctx0-p1', {
+      path: '/rec/popup.webm',
+      contentType: 'video/webm',
+    });
+  });
+
+  it('closes manual contexts when the primary page context() throws (already gone)', async () => {
+    // Primary page already closed → context() throws → primaryCtx is
+    // undefined, so every distinct manual context is still finalized.
+    const primary = makePage(undefined, { contextThrows: true });
+    const manualCtx = makeContext();
+    const manual = makePage(manualCtx);
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({ page: manual, pageId: 'ctx1/p0', videoRecordingPath: '/rec/manual.webm' }),
+      ],
+      primary,
+      new Map(),
+      { attach, timeoutMs: 1000, fileExists: ALWAYS },
+    );
+
+    expect(manualCtx.close).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledTimes(1);
+  });
+
+  it('is a no-op when the only entry is the primary page', async () => {
+    const primaryCtx = makeContext();
+    const primary = makePage(primaryCtx);
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [entry({ page: primary, pageId: 'ctx0/p0' })],
+      primary,
+      new Map(),
+      {
+        attach,
+        timeoutMs: 1000,
+        fileExists: ALWAYS,
+      },
+    );
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(primaryCtx.close).not.toHaveBeenCalled();
+  });
+
   it('does not close a context already closed by the test (context() throws)', async () => {
     const primary = makePage(makeContext());
     // Page whose context() throws — the test closed it mid-body.
