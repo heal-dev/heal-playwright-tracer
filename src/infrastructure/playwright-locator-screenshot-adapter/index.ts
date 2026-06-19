@@ -31,19 +31,29 @@ import { ScreenshotCaptureSession } from './screenshot-capture-session';
 import {
   installExpectScreenshotGlobal,
   uninstallExpectScreenshotGlobal,
+  installExpectScreenshotAfterGlobal,
+  uninstallExpectScreenshotAfterGlobal,
 } from './expect-screenshot-runtime';
 
 export function startLocatorScreenshotCapture(
   samplePage: Page,
   outputDir: string,
   onScreenshotWritten: (filename: string) => void,
+  onRawScreenshotWritten: (filename: string) => void,
   screenshotTimeoutMs: number,
 ): () => void {
   ensureLocatorPrototypePatched(samplePage);
-  const session = new ScreenshotCaptureSession(outputDir, onScreenshotWritten, screenshotTimeoutMs);
+  const session = new ScreenshotCaptureSession(
+    outputDir,
+    onScreenshotWritten,
+    onRawScreenshotWritten,
+    screenshotTimeoutMs,
+  );
   setActiveCaptureSession(session);
   installExpectScreenshotGlobal();
+  installExpectScreenshotAfterGlobal();
   return () => {
+    uninstallExpectScreenshotAfterGlobal();
     uninstallExpectScreenshotGlobal();
     setActiveCaptureSession(null);
   };

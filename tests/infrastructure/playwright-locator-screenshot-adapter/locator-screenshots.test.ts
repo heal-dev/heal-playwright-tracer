@@ -23,6 +23,7 @@ import { setActiveCaptureSession } from '../../../src/infrastructure/playwright-
 import { HEAL_EXPECT_SCREENSHOT } from '../../../src/domain/trace-event-recorder/model/global-names';
 
 const mockSetScreenshot = vi.fn<(filename: string) => void>();
+const mockSetRawScreenshot = vi.fn<(filename: string) => void>();
 
 // --- Fake Page / Locator ---------------------------------------------------
 //
@@ -79,11 +80,18 @@ function makeFakePageAndLocatorClass() {
 describe('locator-screenshots', () => {
   beforeEach(() => {
     mockSetScreenshot.mockReset();
+    mockSetRawScreenshot.mockReset();
   });
 
   it('runs boundingBox → overlay → screenshot → action → remove overlay in order', async () => {
     const { fakePage, FakeLocator, log, screenshotPaths } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     const result = await loc.click('opts');
@@ -93,40 +101,65 @@ describe('locator-screenshots', () => {
     expect(names).toEqual([
       'page.evaluate', // wait for page idle (fonts.ready + rAF)
       'locator.boundingBox',
+      'page.screenshot', // raw (overlay-free) frame → raw/
       'page.evaluate', // draw overlay
-      'page.screenshot',
-      'locator.click', // the real action, after the screenshot
+      'page.screenshot', // highlight frame
+      'locator.click', // the real action, after the screenshots
       'page.evaluate', // remove overlay
     ]);
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-click.png']);
+    expect(screenshotPaths).toEqual([
+      '/tmp/out/raw/raw-1-click.png',
+      '/tmp/out/highlight-1-click.png',
+    ]);
   });
 
   it('stamps the captured filename onto the active statement via setCurrentStatementScreenshot', async () => {
     const { fakePage, FakeLocator } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
 
     expect(mockSetScreenshot).toHaveBeenCalledTimes(1);
     expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-click.png');
+    // The action also emits an overlay-free `raw/` frame, sharing the seq.
+    expect(mockSetRawScreenshot).toHaveBeenCalledTimes(1);
+    expect(mockSetRawScreenshot).toHaveBeenCalledWith('raw-1-click.png');
   });
 
   it('increments the sequence across distinct action calls', async () => {
     const { fakePage, FakeLocator, screenshotPaths } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
     await loc.fill('hello');
 
     expect(screenshotPaths).toEqual([
+      '/tmp/out/raw/raw-1-click.png',
       '/tmp/out/highlight-1-click.png',
+      '/tmp/out/raw/raw-2-fill.png',
       '/tmp/out/highlight-2-fill.png',
     ]);
     expect(mockSetScreenshot.mock.calls.map((c) => c[0])).toEqual([
       'highlight-1-click.png',
       'highlight-2-fill.png',
+    ]);
+    expect(mockSetRawScreenshot.mock.calls.map((c) => c[0])).toEqual([
+      'raw-1-click.png',
+      'raw-2-fill.png',
     ]);
   });
 
@@ -138,7 +171,13 @@ describe('locator-screenshots', () => {
         log.push({ name: 'locator.boundingBox', args: [] });
         return null;
       };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
@@ -161,6 +200,7 @@ describe('locator-screenshots', () => {
       fakePage as never,
       '/tmp/out',
       mockSetScreenshot,
+      mockSetRawScreenshot,
       1000,
     );
     stop();
@@ -182,7 +222,13 @@ describe('locator-screenshots', () => {
     });
     const writeFileSpy = vi.spyOn(fs.promises, 'writeFile').mockResolvedValue(undefined as never);
 
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     const loc = new FakeLocator();
     await loc.click();
 
@@ -205,12 +251,21 @@ describe('locator-screenshots', () => {
     });
     const writeFileSpy = vi.spyOn(fs.promises, 'writeFile');
 
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     const loc = new FakeLocator();
     await loc.click();
 
     // page.screenshot fallback was used, fs.writeFile was not.
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-click.png']);
+    expect(screenshotPaths).toEqual([
+      '/tmp/out/raw/raw-1-click.png',
+      '/tmp/out/highlight-1-click.png',
+    ]);
     expect(writeFileSpy).not.toHaveBeenCalled();
     expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-click.png');
 
@@ -230,7 +285,13 @@ describe('locator-screenshots', () => {
       newCDPSession: vi.fn().mockRejectedValue(new Error('CDP not supported')),
     });
 
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 250);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      250,
+    );
     const loc = new FakeLocator();
     await loc.click();
 
@@ -247,7 +308,13 @@ describe('locator-screenshots', () => {
       newCDPSession: vi.fn(() => new Promise(() => {})),
     });
 
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 50);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      50,
+    );
     const loc = new FakeLocator();
     const start = Date.now();
     await loc.click();
@@ -255,7 +322,10 @@ describe('locator-screenshots', () => {
 
     // JS fallback ran via page.screenshot — proves we did not hang
     // waiting for CDP setup.
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-click.png']);
+    expect(screenshotPaths).toEqual([
+      '/tmp/out/raw/raw-1-click.png',
+      '/tmp/out/highlight-1-click.png',
+    ]);
     expect(mockSetScreenshot).toHaveBeenCalledWith('highlight-1-click.png');
     // Capped at 50ms; allow generous slack for CI.
     expect(elapsed).toBeLessThan(1000);
@@ -263,8 +333,20 @@ describe('locator-screenshots', () => {
 
   it('is idempotent — calling startCapture twice does not double-patch', async () => {
     const { fakePage, FakeLocator, log } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
@@ -283,7 +365,13 @@ describe('locator-screenshots', () => {
         log.push({ name: 'locator.boundingBox', args: [options] });
         return { x: 1, y: 2, width: 3, height: 4 };
       };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
@@ -306,7 +394,13 @@ describe('locator-screenshots', () => {
       scrollOpts.push(options);
       log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [options] });
     };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
@@ -318,8 +412,9 @@ describe('locator-screenshots', () => {
       'locator.scrollIntoViewIfNeeded',
       'page.evaluate', // wait for page idle
       'locator.boundingBox',
+      'page.screenshot', // raw (overlay-free) frame
       'page.evaluate', // draw overlay
-      'page.screenshot',
+      'page.screenshot', // highlight frame
       'locator.click',
       'page.evaluate', // remove overlay
     ]);
@@ -335,7 +430,13 @@ describe('locator-screenshots', () => {
     (fakePage as unknown as { context: () => unknown }).context = () => ({
       newCDPSession: vi.fn().mockRejectedValue(new Error('CDP not supported')),
     });
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await loc.click();
@@ -360,7 +461,13 @@ describe('locator-screenshots', () => {
     ).scrollIntoViewIfNeeded = async function () {
       log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
     };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     await (
@@ -382,13 +489,22 @@ describe('locator-screenshots', () => {
       log.push({ name: 'locator.scrollIntoViewIfNeeded', args: [] });
       throw new Error('detached');
     };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     const loc = new FakeLocator();
     const result = await loc.click();
 
     expect(result).toBe('clicked');
-    expect(screenshotPaths).toEqual(['/tmp/out/highlight-1-click.png']);
+    expect(screenshotPaths).toEqual([
+      '/tmp/out/raw/raw-1-click.png',
+      '/tmp/out/highlight-1-click.png',
+    ]);
     // Scroll attempted, then capture continued normally.
     expect(log[0].name).toBe('locator.scrollIntoViewIfNeeded');
     expect(log.some((c) => c.name === 'page.screenshot')).toBe(true);
@@ -469,7 +585,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
 
   it('runs count → scroll → idle-wait → measure → overlay → screenshot → remove for a locator', async () => {
     const { fakePage, locator, log, screenshotPaths } = makeFakeExpectLocator();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     await expectScreenshotHelper(locator);
 
@@ -487,7 +609,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
 
   it('stamps the captured filename onto the active statement', async () => {
     const { fakePage, locator } = makeFakeExpectLocator();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     await expectScreenshotHelper(locator);
 
@@ -497,7 +625,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
 
   it('no-ops for non-Locator targets (plain values, strings, numbers, null)', async () => {
     const { fakePage, screenshotPaths } = makeFakeExpectLocator();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     await expectScreenshotHelper('hello');
     await expectScreenshotHelper(42);
@@ -535,6 +669,7 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
       fakePage as never,
       '/tmp/out',
       mockSetScreenshot,
+      mockSetRawScreenshot,
       1000,
     );
     expect(typeof slot()).toBe('function');
@@ -554,7 +689,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     // resolved. The helper must short-circuit before touching the
     // session — no screenshot, no error.
     const { fakePage, locator, log } = makeFakeExpectLocator();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     // Replace the locator's `.page()` so it returns null.
     locator.page = (() => null) as unknown as typeof locator.page;
 
@@ -565,7 +706,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
 
   it('honors `{ scroll: false }` for viewport-sensitive matchers', async () => {
     const { fakePage, locator, log } = makeFakeExpectLocator();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     await expectScreenshotHelper(locator, { scroll: false });
     expect(log.some((c) => c.name === 'locator.scrollIntoViewIfNeeded')).toBe(false);
@@ -587,7 +734,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
         log.push({ name: 'locator.count', args: [] });
         return 0;
       };
-      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+      startLocatorScreenshotCapture(
+        fakePage as never,
+        '/tmp/out',
+        mockSetScreenshot,
+        mockSetRawScreenshot,
+        1000,
+      );
 
       await expectScreenshotHelper(locator);
 
@@ -603,7 +756,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
       locator.count = async () => {
         throw new Error('count rejected');
       };
-      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+      startLocatorScreenshotCapture(
+        fakePage as never,
+        '/tmp/out',
+        mockSetScreenshot,
+        mockSetRawScreenshot,
+        1000,
+      );
 
       await expectScreenshotHelper(locator);
 
@@ -616,7 +775,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     it('falls back to the highlight path when count() is missing entirely', async () => {
       const { fakePage, locator, log } = makeFakeExpectLocator();
       delete (locator as { count?: unknown }).count;
-      startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+      startLocatorScreenshotCapture(
+        fakePage as never,
+        '/tmp/out',
+        mockSetScreenshot,
+        mockSetRawScreenshot,
+        1000,
+      );
 
       await expectScreenshotHelper(locator);
 
@@ -631,7 +796,13 @@ describe('expectScreenshotHelper — expect-side capture pipeline', () => {
     fakePage.screenshot = async () => {
       throw new Error('screenshot exploded');
     };
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
 
     await expect(expectScreenshotHelper(locator)).resolves.toBeUndefined();
   });
@@ -649,7 +820,13 @@ describe('locator-patch — page-attribution stamp', () => {
 
   it('invokes the active stamper with the action target page BEFORE the action runs', async () => {
     const { fakePage, FakeLocator, log } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     const stampedWith: unknown[] = [];
     setActivePageStamper((page) => {
       log.push({ name: 'page-stamp', args: [] });
@@ -671,7 +848,13 @@ describe('locator-patch — page-attribution stamp', () => {
 
   it('swallows a throwing stamper — the action still runs and returns', async () => {
     const { fakePage, FakeLocator } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     setActivePageStamper(() => {
       throw new Error('stamp boom');
     });
@@ -682,7 +865,13 @@ describe('locator-patch — page-attribution stamp', () => {
 
   it('no-ops when no stamper is active — action runs normally', async () => {
     const { fakePage, FakeLocator } = makeFakePageAndLocatorClass();
-    startLocatorScreenshotCapture(fakePage as never, '/tmp/out', mockSetScreenshot, 1000);
+    startLocatorScreenshotCapture(
+      fakePage as never,
+      '/tmp/out',
+      mockSetScreenshot,
+      mockSetRawScreenshot,
+      1000,
+    );
     setActivePageStamper(null);
 
     const loc = new FakeLocator();

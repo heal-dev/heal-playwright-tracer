@@ -116,6 +116,13 @@ export interface EnterEvent extends TraceEventBase {
   pageId?: string;
   /** Highlight screenshot filename captured by locator-screenshots, if any. */
   screenshot?: string;
+  /**
+   * Overlay-free screenshot filename captured after a passing wrapped
+   * assertion's matcher (in the `raw/` subfolder). Stamped post-emit by
+   * `setCurrentStatementRawScreenshot`. Absent for actions and for
+   * assertions that threw.
+   */
+  rawScreenshot?: string;
 }
 
 /**

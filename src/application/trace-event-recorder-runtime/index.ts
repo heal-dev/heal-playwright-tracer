@@ -74,6 +74,7 @@ export const setPage = traceEventRecorder.setPage;
 export const pushStep = traceEventRecorder.pushStep;
 export const popStep = traceEventRecorder.popStep;
 export const setCurrentStatementScreenshot = traceEventRecorder.setCurrentStatementScreenshot;
+export const setCurrentStatementRawScreenshot = traceEventRecorder.setCurrentStatementRawScreenshot;
 export const setCurrentStatementPage = traceEventRecorder.setCurrentStatementPage;
 export const setExporter = traceEventRecorder.setExporter;
 
