@@ -54,6 +54,7 @@ import {
   pushStep,
   popStep,
   setCurrentStatementScreenshot,
+  setCurrentStatementRawScreenshot,
   setCurrentStatementPage,
   getCurrentStatementSeq,
   getCurrentStepPath,
@@ -247,6 +248,7 @@ export const test = base.extend<TraceFixtures>({
         page,
         screenshotsDir,
         setCurrentStatementScreenshot,
+        setCurrentStatementRawScreenshot,
         screenshotTimeoutMs,
       );
 

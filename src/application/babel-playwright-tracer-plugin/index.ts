@@ -215,6 +215,10 @@ function codeHookInjector(
           ? expectCallDetector.matchExpectCall(node)
           : null;
         let pendingInsertBefore: BabelTypes.Statement[] | null = null;
+        // Appended as the LAST statement in the assertion's try body so
+        // it fires only when the matcher passed — snaps the settled,
+        // overlay-free page into the `raw/` subfolder.
+        let afterStmt: BabelTypes.Statement | null = null;
         if (expectMatch) {
           const injection = expectScreenshotInjector.build({
             scope: stmtPath.scope,
@@ -231,6 +235,7 @@ function codeHookInjector(
             if (injection.insertBeforeStmt) pendingInsertBefore.push(injection.insertBeforeStmt);
           }
           if (injection.tryBodyStmt) preTryStmts.push(injection.tryBodyStmt);
+          afterStmt = injection.afterStmt;
         }
 
         if (t.isVariableDeclaration(node)) {
@@ -245,7 +250,7 @@ function codeHookInjector(
           const okArgs = bindingNames.size ? [varsObject] : [];
           const { threwId, tryStmt } = buildTryFinally(
             stmtPath.scope,
-            [...preTryStmts, ...assignments],
+            [...preTryStmts, ...assignments, ...(afterStmt ? [afterStmt] : [])],
             okArgs,
           );
 
@@ -262,7 +267,11 @@ function codeHookInjector(
         // original statement inside the try body.
         (node as TracedNode)._traced = true;
 
-        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [...preTryStmts, node]);
+        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [
+          ...preTryStmts,
+          node,
+          ...(afterStmt ? [afterStmt] : []),
+        ]);
         const wrapper = t.blockStatement([
           callStmt(HEAL_ENTER, [meta]),
           buildThrewDecl(threwId),

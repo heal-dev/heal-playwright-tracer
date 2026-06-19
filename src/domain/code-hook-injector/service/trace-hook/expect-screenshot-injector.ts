@@ -48,7 +48,10 @@
 import type * as BabelTypes from '@babel/types';
 import type { Scope } from '@babel/traverse';
 import { HEAL_IGNORE_DIRECTIVE } from '../statement-analysis/heal-ignore-directive';
-import { HEAL_EXPECT_SCREENSHOT } from '../../../trace-event-recorder/model/global-names';
+import {
+  HEAL_EXPECT_SCREENSHOT,
+  HEAL_EXPECT_SCREENSHOT_AFTER,
+} from '../../../trace-event-recorder/model/global-names';
 
 type Types = typeof BabelTypes;
 
@@ -85,6 +88,17 @@ export interface ExpectScreenshotInjection {
    * re-process it. `null` in visible mode.
    */
   tryBodyStmt: BabelTypes.ExpressionStatement | null;
+
+  /**
+   * The after-capture helper call — `await
+   * globalThis.__heal_expect_screenshot_after?.(…)` — appended by the
+   * plugin as the LAST statement in the assertion's try body, so it
+   * fires only when the matcher passed (a throw skips it). Marked
+   * `_traced` so it stamps the assertion's enter event rather than
+   * becoming its own statement, and reuses the same (possibly hoisted)
+   * target binding as the pre-snap. Emitted in both modes.
+   */
+  afterStmt: BabelTypes.ExpressionStatement | null;
 }
 
 export interface ExpectScreenshotInjector {
@@ -130,11 +144,9 @@ export function createExpectScreenshotInjector(t: Types): ExpectScreenshotInject
   function buildHelperCall(
     targetExpr: BabelTypes.Expression,
     scroll: boolean,
+    globalName: string = HEAL_EXPECT_SCREENSHOT,
   ): BabelTypes.ExpressionStatement {
-    const callee = t.memberExpression(
-      t.identifier('globalThis'),
-      t.identifier(HEAL_EXPECT_SCREENSHOT),
-    );
+    const callee = t.memberExpression(t.identifier('globalThis'), t.identifier(globalName));
     const args: BabelTypes.Expression[] = [targetExpr];
     // Only emit the options arg when we need to override the default
     // (`scroll: true`), so the common-case generated code stays
@@ -176,18 +188,29 @@ export function createExpectScreenshotInjector(t: Types): ExpectScreenshotInject
       const targetSrc = targetSourceString(target, originalCode);
       const syntheticSource = `await __heal_expect_screenshot(${targetSrc})`;
 
+      // The after-capture call — runs only when the matcher passed (the
+      // plugin appends it to the END of the try body). `_traced` so it
+      // stamps the assertion's enter event instead of being wrapped.
+      // Clone the ref first, before the pre-snap consumes `refIdent`.
+      const afterStmt = buildHelperCall(
+        t.cloneNode(refIdent),
+        scroll,
+        HEAL_EXPECT_SCREENSHOT_AFTER,
+      );
+      (afterStmt as TracedNode)._traced = true;
+
       if (mode === 'visible') {
         const stmt = buildHelperCall(refIdent, scroll);
         // Carry the assertion's loc so the visitor's `if (!node.loc)`
         // guard passes and the line is wrapped on the next pass.
         if (expectStmtLoc) stmt.loc = expectStmtLoc;
         (stmt as SyntheticSourceNode)._healSyntheticSource = syntheticSource;
-        return { hoistDecl, insertBeforeStmt: stmt, tryBodyStmt: null };
+        return { hoistDecl, insertBeforeStmt: stmt, tryBodyStmt: null, afterStmt };
       }
 
       const stmt = buildHelperCall(refIdent, scroll);
       (stmt as TracedNode)._traced = true;
-      return { hoistDecl, insertBeforeStmt: null, tryBodyStmt: stmt };
+      return { hoistDecl, insertBeforeStmt: null, tryBodyStmt: stmt, afterStmt };
     },
   };
 }

@@ -84,6 +84,7 @@ export class ScreenshotCaptureSession {
   constructor(
     private readonly outputDir: string,
     private readonly onScreenshotWritten: (filename: string) => void,
+    private readonly onRawScreenshotWritten: (filename: string) => void,
     private readonly screenshotTimeoutMs: number,
   ) {}
 
@@ -114,7 +115,7 @@ export class ScreenshotCaptureSession {
     page: Page,
     target: CapturableTarget,
     actionName: string,
-    options: { scrollBeforeCapture: boolean },
+    options: { scrollBeforeCapture: boolean; alsoRaw?: boolean },
   ): Promise<(() => Promise<void>) | null> {
     if (options.scrollBeforeCapture && typeof target.scrollIntoViewIfNeeded === 'function') {
       try {
@@ -134,9 +135,59 @@ export class ScreenshotCaptureSession {
     if (!box) return null;
 
     const seq = ++this.seq;
+    // Action path: also write the same settled frame WITHOUT the overlay
+    // into `raw/`, sharing this seq so the highlight/raw pair line up.
+    // Done before `drawAndScreenshot` draws the box, so the raw frame is
+    // clean. (Assertions don't set this — their clean frame is the
+    // after-snap; the pre-snap here would be the pre-matcher loading frame.)
+    if (options.alsoRaw) {
+      await this.writeRaw(page, actionName, seq);
+    }
     const filename = `highlight-${seq}-${actionName}.png`;
     const fullPath = path.join(this.outputDir, filename);
     return this.drawAndScreenshot(page, seq, box, filename, fullPath);
+  }
+
+  // Overlay-free capture used by the expect-screenshot AFTER-helper:
+  // once an assertion's matcher has passed, snap the now-settled page
+  // (no highlight box) into the `raw/` subfolder. Same scroll + idle
+  // gate as the highlight path, but no measure / overlay / cleanup —
+  // the frame is the clean page the visual-defect detector consumes.
+  async captureRaw(
+    page: Page,
+    target: CapturableTarget,
+    actionName: string,
+    options: { scrollBeforeCapture: boolean },
+  ): Promise<void> {
+    if (options.scrollBeforeCapture && typeof target.scrollIntoViewIfNeeded === 'function') {
+      try {
+        await target.scrollIntoViewIfNeeded({ timeout: this.screenshotTimeoutMs });
+      } catch (err) {
+        log.warn(`scrollIntoViewIfNeeded failed before ${actionName} raw screenshot`, err);
+      }
+    }
+    await this.waitForPageIdle(page);
+    await this.writeRaw(page, actionName);
+  }
+
+  // Raw counterpart of `captureViewportOnly` for the count===0
+  // assertion case (`toBeHidden()`, `.not.toBeVisible()`): nothing to
+  // frame, but the settled page is still worth a clean frame.
+  async captureRawViewportOnly(page: Page, actionName: string): Promise<void> {
+    await this.waitForPageIdle(page);
+    await this.writeRaw(page, actionName);
+  }
+
+  private async writeRaw(page: Page, actionName: string, seq: number = ++this.seq): Promise<void> {
+    const filename = `raw-${seq}-${actionName}.png`;
+    const rawDir = path.join(this.outputDir, 'raw');
+    try {
+      await fs.promises.mkdir(rawDir, { recursive: true });
+      await this.takeScreenshot(page, path.join(rawDir, filename));
+      this.onRawScreenshotWritten(filename);
+    } catch (err) {
+      log.warn(`writeRaw takeScreenshot rejected for ${actionName}`, err);
+    }
   }
 
   // Best-effort "page is visually settled" gate, run after the

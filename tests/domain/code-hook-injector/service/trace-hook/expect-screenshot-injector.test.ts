@@ -257,4 +257,73 @@ describe('expect-screenshot injector', () => {
       );
     });
   });
+
+  describe('after-capture (success-only raw snap)', () => {
+    it('emits the after-capture call under `afterStmt` (visible mode)', () => {
+      const target = t.identifier('heading');
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      expect(result.afterStmt).not.toBeNull();
+      expect(print(result.afterStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(heading);',
+      );
+    });
+
+    it('tags the after-capture `_traced=true` so it stamps the assertion, not its own statement', () => {
+      const target = t.identifier('heading');
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      type Traced = t.ExpressionStatement & { _traced?: boolean };
+      expect((result.afterStmt as Traced)._traced).toBe(true);
+    });
+
+    it('emits the after-capture in hidden mode too', () => {
+      const target = t.identifier('heading');
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'hidden',
+        matcherName: 'toBeVisible',
+      });
+      expect(print(result.afterStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(heading);',
+      );
+    });
+
+    it('references the hoisted binding in the after-capture for non-Identifier targets', () => {
+      const target = t.callExpression(
+        t.memberExpression(t.identifier('page'), t.identifier('getByRole')),
+        [t.stringLiteral('heading')],
+      );
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(page.getByRole("heading")).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      expect(print(result.afterStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(_healExpectTarget);',
+      );
+    });
+  });
 });
