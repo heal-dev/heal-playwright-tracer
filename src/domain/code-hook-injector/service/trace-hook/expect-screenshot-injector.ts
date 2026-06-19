@@ -90,15 +90,26 @@ export interface ExpectScreenshotInjection {
   tryBodyStmt: BabelTypes.ExpressionStatement | null;
 
   /**
-   * The after-capture helper call — `await
-   * globalThis.__heal_expect_screenshot_after?.(…)` — appended by the
-   * plugin as the LAST statement in the assertion's try body, so it
-   * fires only when the matcher passed (a throw skips it). Marked
-   * `_traced` so it stamps the assertion's enter event rather than
-   * becoming its own statement, and reuses the same (possibly hoisted)
-   * target binding as the pre-snap. Emitted in both modes.
+   * Visible-mode only: the after-capture helper call — `await
+   * globalThis.__heal_expect_screenshot_after?.(…)` — to insert as its
+   * own sibling statement *after* the assertion. Like `insertBeforeStmt`
+   * it carries the assertion's loc and a `_healSyntheticSource`, so the
+   * Statement visitor re-visits and wraps it into a standalone leaf step
+   * carrying the `rawScreenshot` field. Sitting after the assertion makes
+   * it success-only — a throwing matcher propagates past it. `null` in
+   * hidden mode.
    */
-  afterStmt: BabelTypes.ExpressionStatement | null;
+  insertAfterStmt: BabelTypes.ExpressionStatement | null;
+
+  /**
+   * Hidden-mode only: the after-capture helper call appended as the
+   * LAST statement in the assertion's own try-body, so it fires only
+   * when the matcher passed (a throw skips it). Marked `_traced` so it
+   * stamps the assertion's enter event (`rawScreenshot`) rather than
+   * becoming its own statement, and reuses the same (possibly hoisted)
+   * target binding as the pre-snap. `null` in visible mode.
+   */
+  afterTryBodyStmt: BabelTypes.ExpressionStatement | null;
 }
 
 export interface ExpectScreenshotInjector {
@@ -186,31 +197,50 @@ export function createExpectScreenshotInjector(t: Types): ExpectScreenshotInject
       }
 
       const targetSrc = targetSourceString(target, originalCode);
-      const syntheticSource = `await __heal_expect_screenshot(${targetSrc})`;
+      const preSyntheticSource = `await __heal_expect_screenshot(${targetSrc})`;
+      const afterSyntheticSource = `await __heal_expect_screenshot_after(${targetSrc})`;
 
-      // The after-capture call — runs only when the matcher passed (the
-      // plugin appends it to the END of the try body). `_traced` so it
-      // stamps the assertion's enter event instead of being wrapped.
-      // Clone the ref first, before the pre-snap consumes `refIdent`.
-      const afterStmt = buildHelperCall(
-        t.cloneNode(refIdent),
-        scroll,
-        HEAL_EXPECT_SCREENSHOT_AFTER,
-      );
-      (afterStmt as TracedNode)._traced = true;
-
+      // `hideExpectScreenshots` governs BOTH captures symmetrically: the
+      // pre-snap highlight and the post-pass raw snap are either both
+      // their own steps (visible) or both folded onto the assertion
+      // (hidden). The after-snap is always success-only — in visible mode
+      // by sitting after the assertion (a throw skips the sibling); in
+      // hidden mode by being the last statement in the assertion's try
+      // body. Clone `refIdent` per use so the pre- and after-snap don't
+      // share an AST node.
       if (mode === 'visible') {
-        const stmt = buildHelperCall(refIdent, scroll);
+        const pre = buildHelperCall(t.cloneNode(refIdent), scroll);
         // Carry the assertion's loc so the visitor's `if (!node.loc)`
-        // guard passes and the line is wrapped on the next pass.
-        if (expectStmtLoc) stmt.loc = expectStmtLoc;
-        (stmt as SyntheticSourceNode)._healSyntheticSource = syntheticSource;
-        return { hoistDecl, insertBeforeStmt: stmt, tryBodyStmt: null, afterStmt };
+        // guard passes and each synthetic line is wrapped on the next pass.
+        if (expectStmtLoc) pre.loc = expectStmtLoc;
+        (pre as SyntheticSourceNode)._healSyntheticSource = preSyntheticSource;
+
+        const after = buildHelperCall(t.cloneNode(refIdent), scroll, HEAL_EXPECT_SCREENSHOT_AFTER);
+        if (expectStmtLoc) after.loc = expectStmtLoc;
+        (after as SyntheticSourceNode)._healSyntheticSource = afterSyntheticSource;
+
+        return {
+          hoistDecl,
+          insertBeforeStmt: pre,
+          tryBodyStmt: null,
+          insertAfterStmt: after,
+          afterTryBodyStmt: null,
+        };
       }
 
-      const stmt = buildHelperCall(refIdent, scroll);
-      (stmt as TracedNode)._traced = true;
-      return { hoistDecl, insertBeforeStmt: null, tryBodyStmt: stmt, afterStmt };
+      const pre = buildHelperCall(t.cloneNode(refIdent), scroll);
+      (pre as TracedNode)._traced = true;
+
+      const after = buildHelperCall(t.cloneNode(refIdent), scroll, HEAL_EXPECT_SCREENSHOT_AFTER);
+      (after as TracedNode)._traced = true;
+
+      return {
+        hoistDecl,
+        insertBeforeStmt: null,
+        tryBodyStmt: pre,
+        insertAfterStmt: null,
+        afterTryBodyStmt: after,
+      };
     },
   };
 }

@@ -215,10 +215,14 @@ function codeHookInjector(
           ? expectCallDetector.matchExpectCall(node)
           : null;
         let pendingInsertBefore: BabelTypes.Statement[] | null = null;
-        // Appended as the LAST statement in the assertion's try body so
-        // it fires only when the matcher passed — snaps the settled,
-        // overlay-free page into the `raw/` subfolder.
-        let afterStmt: BabelTypes.Statement | null = null;
+        // Visible-mode raw snap: its own sibling step inserted AFTER the
+        // assertion. A throwing matcher propagates past it, so it stays
+        // success-only — snaps the settled, overlay-free page into `raw/`.
+        let pendingInsertAfter: BabelTypes.Statement[] | null = null;
+        // Hidden-mode raw snap: the LAST statement in the assertion's own
+        // try body, so it fires only when the matcher passed and folds
+        // onto the assertion's enter event instead of becoming its own step.
+        let afterTryBodyStmt: BabelTypes.Statement | null = null;
         if (expectMatch) {
           const injection = expectScreenshotInjector.build({
             scope: stmtPath.scope,
@@ -235,7 +239,8 @@ function codeHookInjector(
             if (injection.insertBeforeStmt) pendingInsertBefore.push(injection.insertBeforeStmt);
           }
           if (injection.tryBodyStmt) preTryStmts.push(injection.tryBodyStmt);
-          afterStmt = injection.afterStmt;
+          if (injection.insertAfterStmt) pendingInsertAfter = [injection.insertAfterStmt];
+          afterTryBodyStmt = injection.afterTryBodyStmt;
         }
 
         if (t.isVariableDeclaration(node)) {
@@ -250,7 +255,7 @@ function codeHookInjector(
           const okArgs = bindingNames.size ? [varsObject] : [];
           const { threwId, tryStmt } = buildTryFinally(
             stmtPath.scope,
-            [...preTryStmts, ...assignments, ...(afterStmt ? [afterStmt] : [])],
+            [...preTryStmts, ...assignments, ...(afterTryBodyStmt ? [afterTryBodyStmt] : [])],
             okArgs,
           );
 
@@ -270,7 +275,7 @@ function codeHookInjector(
         const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [
           ...preTryStmts,
           node,
-          ...(afterStmt ? [afterStmt] : []),
+          ...(afterTryBodyStmt ? [afterTryBodyStmt] : []),
         ]);
         const wrapper = t.blockStatement([
           callStmt(HEAL_ENTER, [meta]),
@@ -278,8 +283,12 @@ function codeHookInjector(
           tryStmt,
         ]);
 
-        if (pendingInsertBefore) {
-          stmtPath.replaceWithMultiple([...pendingInsertBefore, wrapper]);
+        if (pendingInsertBefore || pendingInsertAfter) {
+          stmtPath.replaceWithMultiple([
+            ...(pendingInsertBefore ?? []),
+            wrapper,
+            ...(pendingInsertAfter ?? []),
+          ]);
         } else {
           stmtPath.replaceWith(wrapper);
         }
