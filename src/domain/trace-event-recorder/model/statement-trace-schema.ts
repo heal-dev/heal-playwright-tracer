@@ -30,7 +30,7 @@
 // Heal autopilot agent, humans debugging a failing test) should
 // import these types to stay in sync with the file format.
 
-export const HEAL_TRACE_SCHEMA_VERSION = 4;
+export const HEAL_TRACE_SCHEMA_VERSION = 5;
 
 /**
  * One line of a `heal-traces.ndjson` file. Discriminated by `kind`.
@@ -222,6 +222,16 @@ export interface Statement {
    * wrapped assertion.
    */
   screenshot?: string;
+
+  /**
+   * Filename (under the test's `screenshots/raw/` directory) of the
+   * overlay-free screenshot captured AFTER a wrapped assertion's
+   * matcher passed — the page settled by the matcher's own auto-retry,
+   * with no highlight box. Present only for passing assertions; absent
+   * for actions and for assertions that threw. The clean frame visual
+   * defect detection consumes.
+   */
+  rawScreenshot?: string;
 
   /**
    * Statements executed inside this one. Sorted by execution order

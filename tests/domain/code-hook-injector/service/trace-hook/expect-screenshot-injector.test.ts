@@ -257,4 +257,90 @@ describe('expect-screenshot injector', () => {
       );
     });
   });
+
+  describe('after-capture (success-only raw snap)', () => {
+    type Traced = t.ExpressionStatement & { _traced?: boolean };
+    type WithSynthetic = t.ExpressionStatement & { _healSyntheticSource?: string };
+
+    it('visible mode — emits the after-capture as its OWN step under `insertAfterStmt`', () => {
+      const target = t.identifier('heading');
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      // Lives under insertAfterStmt (its own sibling step), NOT folded
+      // into the assertion's try body.
+      expect(result.insertAfterStmt).not.toBeNull();
+      expect(result.afterTryBodyStmt).toBeNull();
+      expect(print(result.insertAfterStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(heading);',
+      );
+    });
+
+    it('visible mode — the after step is NOT `_traced` and carries its own synthetic source', () => {
+      // Symmetric with the pre-snap: it must be re-visited and wrapped
+      // into a standalone leaf carrying the `rawScreenshot` field. Byte
+      // positions match `await expect(heading)…` so the synthetic source
+      // slices to `heading` rather than the no-loc `…` fallback.
+      const target = t.identifier('heading');
+      (target as { start?: number; end?: number }).start = 13;
+      (target as { start?: number; end?: number }).end = 20;
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      expect((result.insertAfterStmt as Traced)._traced).toBeUndefined();
+      expect((result.insertAfterStmt as WithSynthetic)._healSyntheticSource).toBe(
+        'await __heal_expect_screenshot_after(heading)',
+      );
+    });
+
+    it('hidden mode — folds the after-capture into the try body under `afterTryBodyStmt`, `_traced`', () => {
+      const target = t.identifier('heading');
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(heading).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'hidden',
+        matcherName: 'toBeVisible',
+      });
+      expect(result.afterTryBodyStmt).not.toBeNull();
+      expect(result.insertAfterStmt).toBeNull();
+      expect((result.afterTryBodyStmt as Traced)._traced).toBe(true);
+      expect(print(result.afterTryBodyStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(heading);',
+      );
+    });
+
+    it('references the hoisted binding in the after-capture for non-Identifier targets', () => {
+      const target = t.callExpression(
+        t.memberExpression(t.identifier('page'), t.identifier('getByRole')),
+        [t.stringLiteral('heading')],
+      );
+      const result = injector.build({
+        scope: makeFakeScope(),
+        target,
+        originalCode: 'await expect(page.getByRole("heading")).toBeVisible();',
+        expectStmtLoc: null,
+        expectCall: makeExpectCall(target),
+        mode: 'visible',
+        matcherName: 'toBeVisible',
+      });
+      expect(print(result.insertAfterStmt!)).toBe(
+        'await globalThis.__heal_expect_screenshot_after?.(_healExpectTarget);',
+      );
+    });
+  });
 });

@@ -248,6 +248,7 @@ function createStatement(event: EnterEvent, index: number): Statement {
     children: [],
   };
   if (event.screenshot) stmt.screenshot = event.screenshot;
+  if (event.rawScreenshot) stmt.rawScreenshot = event.rawScreenshot;
   if (event.pageId) stmt.pageId = event.pageId;
   if (event.leadingComment != null) stmt.leadingComment = event.leadingComment;
   return stmt;
@@ -264,6 +265,7 @@ function createStatement(event: EnterEvent, index: number): Statement {
  */
 function applyLateEnterFields(stmt: Statement, enter: EnterEvent): void {
   if (enter.screenshot) stmt.screenshot = enter.screenshot;
+  if (enter.rawScreenshot) stmt.rawScreenshot = enter.rawScreenshot;
   if (enter.pageId) stmt.pageId = enter.pageId;
   if (enter.pageUrl !== undefined) stmt.pageUrl = enter.pageUrl;
 }

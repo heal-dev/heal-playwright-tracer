@@ -33,7 +33,7 @@
 
 import type { APIRequest, APIRequestContext, Browser, BrowserContext, Page } from 'playwright';
 import {
-  watchPageVideo,
+  registerContext,
   type PageRegistry,
 } from '../../infrastructure/playwright-page-registry-adapter';
 
@@ -72,31 +72,6 @@ export interface WireAllPagesOptions {
    * (rather than creation-time) registration.
    */
   pageRegistry?: PageRegistry;
-}
-
-/**
- * Register a context and all its current pages in the registry, and
- * subscribe to future pages (popups) opened in it. Best-effort: a
- * Playwright call throwing here must never break wiring.
- */
-function registerContext(registry: PageRegistry, ctx: BrowserContext): void {
-  try {
-    registry.ensureContextId(ctx);
-    for (const p of ctx.pages()) {
-      registry.ensurePageId(p);
-      watchPageVideo(registry, p);
-    }
-    ctx.on('page', (p) => {
-      try {
-        registry.ensurePageId(p);
-        watchPageVideo(registry, p);
-      } catch {
-        // A page event for an already-closing context — ignore.
-      }
-    });
-  } catch {
-    // Context already closed / detached — nothing to register.
-  }
 }
 
 /** Returns a `restore()` thunk that undoes all patches. */

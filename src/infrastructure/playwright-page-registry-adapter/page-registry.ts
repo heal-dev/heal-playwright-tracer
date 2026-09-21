@@ -23,6 +23,25 @@
 
 import type { BrowserContext, Page } from 'playwright';
 
+/** What produced a context, when it is not a plain browser context. */
+export type PageKind = 'electron';
+
+/**
+ * A mark set on a context (see `PageRegistry.markContext`) and copied
+ * onto every page entry of that context, registered before or after.
+ */
+export interface ContextMark {
+  /** What produced this context. Absent for a plain browser context. */
+  kind?: PageKind;
+  /**
+   * `false` when the tracer must leave this context alone at teardown:
+   * an app the host registered by hand (`registerElectronApp`) and still
+   * owns. Absent means the test owns it — closed at teardown so its
+   * video flushes, like a manual `browser.newContext`.
+   */
+  owned?: false;
+}
+
 export interface PageEntry {
   /** Stable `ctx{n}/p{m}` id. */
   pageId: string;
@@ -48,11 +67,37 @@ export interface PageEntry {
    * the video with this page's id. Absent until/unless resolved.
    */
   videoRecordingPath?: string;
+  /**
+   * Resolves to this page's recording-time video path once its context
+   * closes (or `null` if it never resolves / recordVideo is off). Lets
+   * the fixture await a manual context's video at teardown and
+   * auto-attach the file — so a manual context's video lands in
+   * heal-traces without the test calling `testInfo.attach` itself.
+   * Settled by `watchPageVideo`.
+   */
+  videoPathPromise?: Promise<string | null>;
+  /**
+   * Copied from the context's mark. Absent for a plain browser page;
+   * `'electron'` for a window of an app launched with `_electron.launch()`.
+   */
+  kind?: PageKind;
+  /**
+   * Copied from the context's mark. `false` when the tracer must not
+   * close this page's context nor attach its video at teardown.
+   */
+  owned?: false;
+}
+
+function applyMark(entry: PageEntry, mark: ContextMark): void {
+  if (mark.kind !== undefined) entry.kind = mark.kind;
+  if (mark.owned !== undefined) entry.owned = mark.owned;
 }
 
 export class PageRegistry {
   private readonly contextIds = new WeakMap<BrowserContext, string>();
   private readonly contextPageCounts = new WeakMap<BrowserContext, number>();
+  private readonly contextMarks = new WeakMap<BrowserContext, ContextMark>();
+  private readonly entriesByContext = new WeakMap<BrowserContext, PageEntry[]>();
   private readonly pageIds = new WeakMap<Page, string>();
   private readonly entriesByPage = new WeakMap<Page, PageEntry>();
   private readonly entries: PageEntry[] = [];
@@ -89,9 +134,27 @@ export class PageRegistry {
     const pageId = `${ctxId}/p${pageIndex}`;
     this.pageIds.set(page, pageId);
     const entry: PageEntry = { pageId, page, videoStartWallMs: this.now() };
+    const mark = this.contextMarks.get(ctx);
+    if (mark) applyMark(entry, mark);
     this.entriesByPage.set(page, entry);
     this.entries.push(entry);
+    const siblings = this.entriesByContext.get(ctx);
+    if (siblings) siblings.push(entry);
+    else this.entriesByContext.set(ctx, [entry]);
     return pageId;
+  }
+
+  /**
+   * Mark a context with what produced it and whether the test owns it.
+   * Pages registered later inherit the mark, and pages already
+   * registered for this context are back-filled — so the call is
+   * order-proof: an Electron window may be registered (by the stamper
+   * or a `page` event) before the launch hook gets to mark its context.
+   */
+  markContext(ctx: BrowserContext, mark: ContextMark): void {
+    const merged: ContextMark = { ...this.contextMarks.get(ctx), ...mark };
+    this.contextMarks.set(ctx, merged);
+    for (const entry of this.entriesByContext.get(ctx) ?? []) applyMark(entry, merged);
   }
 
   /** Lookup without assigning. Returns undefined for an unseen page. */
@@ -112,6 +175,16 @@ export class PageRegistry {
   setVideoRecordingPath(page: Page, videoRecordingPath: string): void {
     const entry = this.entriesByPage.get(page);
     if (entry) entry.videoRecordingPath = videoRecordingPath;
+  }
+
+  /**
+   * Store the promise that resolves to a page's recording-time video
+   * path once its context closes. No-op for an unregistered page.
+   * Called at registration by `watchPageVideo`.
+   */
+  setVideoPathPromise(page: Page, videoPathPromise: Promise<string | null>): void {
+    const entry = this.entriesByPage.get(page);
+    if (entry) entry.videoPathPromise = videoPathPromise;
   }
 
   /** Every page seen this test, in registration order. */

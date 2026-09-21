@@ -34,7 +34,10 @@
 import type { Locator, Page } from 'playwright';
 import { getActiveCaptureSession } from './locator-patch';
 import { getActivePageStamper } from '../playwright-page-registry-adapter';
-import { HEAL_EXPECT_SCREENSHOT } from '../../domain/trace-event-recorder/model/global-names';
+import {
+  HEAL_EXPECT_SCREENSHOT,
+  HEAL_EXPECT_SCREENSHOT_AFTER,
+} from '../../domain/trace-event-recorder/model/global-names';
 import { log } from '../../util/logger';
 
 // Same duck-type as the action-side patch: a Playwright Locator
@@ -141,4 +144,56 @@ export function installExpectScreenshotGlobal(): void {
 export function uninstallExpectScreenshotGlobal(): void {
   const g = globalThis as unknown as Record<string, unknown>;
   delete g[HEAL_EXPECT_SCREENSHOT];
+}
+
+// After-capture sibling of `expectScreenshotHelper`. The Babel plugin
+// emits `await globalThis.__heal_expect_screenshot_after?.(target)` as
+// the LAST statement in the assertion's try body, so it runs only when
+// the matcher passed (a throw skips it). It snaps the now-settled page
+// WITHOUT an overlay into the `raw/` subfolder; the filename is stamped
+// onto the assertion's enter event (still on top of the stack at this
+// point) via the session's raw callback. Best-effort like the rest.
+export async function expectScreenshotAfterHelper(
+  target: unknown,
+  options?: ExpectScreenshotOptions,
+): Promise<void> {
+  if (!isLocator(target)) return;
+  const page = typeof target.page === 'function' ? (target.page() as Page | null) : null;
+  if (page) {
+    try {
+      getActivePageStamper()?.(page);
+    } catch (err) {
+      log.warn('page stamp failed for expect-after', err);
+    }
+  }
+  const session = getActiveCaptureSession();
+  if (!session) return;
+  if (!page) return;
+
+  const count = await probeLocatorCount(target);
+  if (count === 0) {
+    try {
+      await session.captureRawViewportOnly(page, 'expect');
+    } catch (err) {
+      log.warn('expectScreenshotAfterHelper captureRawViewportOnly rejected', err);
+    }
+    return;
+  }
+
+  const scrollBeforeCapture = options?.scroll !== false;
+  try {
+    await session.captureRaw(page, target, 'expect', { scrollBeforeCapture });
+  } catch (err) {
+    log.warn('expectScreenshotAfterHelper captureRaw rejected', err);
+  }
+}
+
+export function installExpectScreenshotAfterGlobal(): void {
+  const g = globalThis as unknown as Record<string, unknown>;
+  g[HEAL_EXPECT_SCREENSHOT_AFTER] = expectScreenshotAfterHelper;
+}
+
+export function uninstallExpectScreenshotAfterGlobal(): void {
+  const g = globalThis as unknown as Record<string, unknown>;
+  delete g[HEAL_EXPECT_SCREENSHOT_AFTER];
 }

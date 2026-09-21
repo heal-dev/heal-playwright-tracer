@@ -116,6 +116,18 @@ export class TraceEventRecorder implements TraceEventRecorderState {
   };
 
   /**
+   * Stamp the overlay-free after-assertion (`raw/`) screenshot filename
+   * onto the top enter event. Called by the expect-screenshot after-helper
+   * from inside the assertion's try body once the matcher has passed — so
+   * the assertion's enter event is still on top of the stack and the
+   * projector picks it up at `__ok`. No-op if the stack is empty.
+   */
+  setCurrentStatementRawScreenshot = (filename: string): void => {
+    const top = this.enterStack.peek();
+    if (top) top.rawScreenshot = filename;
+  };
+
+  /**
    * Stamp the page a statement acted on onto whatever enter event is
    * currently on top of the active-enter stack. Called by the
    * page-attribution feature at the moment a patched Locator action,

@@ -215,6 +215,14 @@ function codeHookInjector(
           ? expectCallDetector.matchExpectCall(node)
           : null;
         let pendingInsertBefore: BabelTypes.Statement[] | null = null;
+        // Visible-mode raw snap: its own sibling step inserted AFTER the
+        // assertion. A throwing matcher propagates past it, so it stays
+        // success-only — snaps the settled, overlay-free page into `raw/`.
+        let pendingInsertAfter: BabelTypes.Statement[] | null = null;
+        // Hidden-mode raw snap: the LAST statement in the assertion's own
+        // try body, so it fires only when the matcher passed and folds
+        // onto the assertion's enter event instead of becoming its own step.
+        let afterTryBodyStmt: BabelTypes.Statement | null = null;
         if (expectMatch) {
           const injection = expectScreenshotInjector.build({
             scope: stmtPath.scope,
@@ -231,6 +239,8 @@ function codeHookInjector(
             if (injection.insertBeforeStmt) pendingInsertBefore.push(injection.insertBeforeStmt);
           }
           if (injection.tryBodyStmt) preTryStmts.push(injection.tryBodyStmt);
+          if (injection.insertAfterStmt) pendingInsertAfter = [injection.insertAfterStmt];
+          afterTryBodyStmt = injection.afterTryBodyStmt;
         }
 
         if (t.isVariableDeclaration(node)) {
@@ -245,7 +255,7 @@ function codeHookInjector(
           const okArgs = bindingNames.size ? [varsObject] : [];
           const { threwId, tryStmt } = buildTryFinally(
             stmtPath.scope,
-            [...preTryStmts, ...assignments],
+            [...preTryStmts, ...assignments, ...(afterTryBodyStmt ? [afterTryBodyStmt] : [])],
             okArgs,
           );
 
@@ -262,15 +272,23 @@ function codeHookInjector(
         // original statement inside the try body.
         (node as TracedNode)._traced = true;
 
-        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [...preTryStmts, node]);
+        const { threwId, tryStmt } = buildTryFinally(stmtPath.scope, [
+          ...preTryStmts,
+          node,
+          ...(afterTryBodyStmt ? [afterTryBodyStmt] : []),
+        ]);
         const wrapper = t.blockStatement([
           callStmt(HEAL_ENTER, [meta]),
           buildThrewDecl(threwId),
           tryStmt,
         ]);
 
-        if (pendingInsertBefore) {
-          stmtPath.replaceWithMultiple([...pendingInsertBefore, wrapper]);
+        if (pendingInsertBefore || pendingInsertAfter) {
+          stmtPath.replaceWithMultiple([
+            ...(pendingInsertBefore ?? []),
+            wrapper,
+            ...(pendingInsertAfter ?? []),
+          ]);
         } else {
           stmtPath.replaceWith(wrapper);
         }

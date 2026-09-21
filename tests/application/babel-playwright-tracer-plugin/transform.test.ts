@@ -345,6 +345,27 @@ describe('transform', () => {
         expect(out).toMatch(/await expect\(_healExpectTarget\w*\)\.toBeVisible\(\)/);
       });
 
+      it('folds BOTH the pre- and after-snap helpers into the assertion try-body', () => {
+        // Symmetry: with the flag on, the raw (after) snap is hidden the
+        // same way the highlight (pre) snap is — neither becomes its own
+        // step, both run inside the assertion's try body (pre before the
+        // assertion, after as the last statement so it's success-only).
+        const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`, {
+          pluginOptions: { hideExpectScreenshots: true },
+        });
+        expect(out).toContain('await globalThis.__heal_expect_screenshot?.(heading)');
+        expect(out).toContain('await globalThis.__heal_expect_screenshot_after?.(heading)');
+        // Neither helper gets its own enter event — no synthetic sources.
+        expect(out).not.toContain('source: "await __heal_expect_screenshot');
+        // Order inside the try body: pre-snap, then the user assertion,
+        // then the after-snap.
+        const preIdx = out.indexOf('await globalThis.__heal_expect_screenshot?.(heading)');
+        const userIdx = out.indexOf('await expect(heading).toBeVisible()', preIdx);
+        const afterIdx = out.indexOf('await globalThis.__heal_expect_screenshot_after?.(heading)');
+        expect(preIdx).toBeLessThan(userIdx);
+        expect(userIdx).toBeLessThan(afterIdx);
+      });
+
       it('does not double-wrap the helper — exactly one __heal_enter for the assertion', () => {
         // In hidden mode the helper is `_traced=true`, so the
         // Statement visitor must NOT re-process it and emit its own
@@ -369,19 +390,26 @@ describe('transform', () => {
       });
     });
 
-    it('emits exactly two __heal_enter blocks for one visible-mode assertion', () => {
-      // Visible mode default: one enter for the synthetic helper
-      // statement, one enter for the user's assertion. Confirms the
-      // visitor revisits and wraps the inserted helper exactly once.
+    it('emits three __heal_enter blocks for one visible-mode assertion (pre-snap, assertion, after-snap)', () => {
+      // Visible mode default: BOTH screenshot helpers are their own
+      // steps — one enter for the synthetic pre-snap line, one for the
+      // user's assertion, one for the synthetic after-snap line. The
+      // raw snap honours `hideExpectScreenshots` symmetrically with the
+      // highlight, so in visible mode it is NOT folded onto the assertion.
       const out = transform(`test('x', async () => { await expect(heading).toBeVisible(); });`);
-      // The two distinct sources from the two enter blocks.
-      expect(out).toContain('source: "await __heal_expect_screenshot(heading)"');
-      expect(out).toContain('source: "await expect(heading).toBeVisible();"');
-      // And the helper's __enter must appear before the assertion's,
-      // since it's the screenshot-capturing step that runs first.
-      const helperEnter = out.indexOf('source: "await __heal_expect_screenshot(heading)"');
-      const assertEnter = out.indexOf('source: "await expect(heading).toBeVisible();"');
-      expect(helperEnter).toBeLessThan(assertEnter);
+      // Outer test('x', …) enter + the three above = four.
+      const enterMatches = out.match(/globalThis\.__heal_enter\?\./g) ?? [];
+      expect(enterMatches).toHaveLength(4);
+      // The three distinct enter-block sources.
+      const preIdx = out.indexOf('source: "await __heal_expect_screenshot(heading)"');
+      const assertIdx = out.indexOf('source: "await expect(heading).toBeVisible();"');
+      const afterIdx = out.indexOf('source: "await __heal_expect_screenshot_after(heading)"');
+      expect(preIdx).toBeGreaterThan(-1);
+      expect(assertIdx).toBeGreaterThan(-1);
+      expect(afterIdx).toBeGreaterThan(-1);
+      // Execution order: pre-snap → assertion → after-snap.
+      expect(preIdx).toBeLessThan(assertIdx);
+      expect(assertIdx).toBeLessThan(afterIdx);
     });
   });
 });

@@ -19,7 +19,8 @@ import type { VideoPageInfo } from '../../infrastructure/heal-reporter';
 /**
  * @param entries        Every page the registry saw, in creation order
  *                       (`pageRegistry.list()`).
- * @param primaryPage    The test's built-in `page`, labelled `'main'`.
+ * @param primaryPage    The test's built-in `page`, labelled `'main'`. Other
+ *                       pages are `page-n`; Electron windows `window-n`.
  * @param videoAttachMap recordingPath → final attachment path, captured
  *                       by intercepting `testInfo.attach` (manual videos).
  */
@@ -30,6 +31,12 @@ export function buildVideoPages(
 ): VideoPageInfo[] {
   const videoPages: VideoPageInfo[] = [];
   let otherIndex = 0;
+  let windowIndex = 0;
+  const labelFor = (entry: PageEntry): string => {
+    if (entry.page === primaryPage) return 'main';
+    if (entry.kind === 'electron') return `window-${(windowIndex += 1)}`;
+    return `page-${(otherIndex += 1)}`;
+  };
   for (const entry of entries) {
     const p = entry.page;
     let hasVideo = false;
@@ -47,15 +54,19 @@ export function buildVideoPages(
     // an attached one (manual, path-matched). A recorded-but-unattached
     // video produces no attachment, so it must not claim a positional slot.
     if (!hasVideo && !videoPath) continue;
+    // An Electron window's video is always attached by path (by the
+    // fixture, or by the test itself) — never positionally. One whose
+    // recording was removed (video mode not met) still answers `video()`,
+    // and must not claim a slot it can never fill.
+    if (entry.kind === 'electron' && !videoPath) continue;
     let url = '';
     try {
       url = p.url();
     } catch {
       url = '';
     }
-    const name = p === primaryPage ? 'main' : `page-${(otherIndex += 1)}`;
     videoPages.push({
-      name,
+      name: labelFor(entry),
       url,
       pageId: entry.pageId,
       videoStartWallMs: entry.videoStartWallMs,

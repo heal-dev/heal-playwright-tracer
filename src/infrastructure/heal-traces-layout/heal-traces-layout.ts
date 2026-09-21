@@ -26,6 +26,7 @@ export class HealTracesLayout {
   static readonly CONSOLE_NDJSON_FILENAME = 'heal-console.ndjson';
   static readonly TRACE_FILENAME = 'trace.zip';
   static readonly SCREENSHOTS_SUBDIR = 'screenshots';
+  static readonly RAW_SCREENSHOTS_SUBDIR = 'raw';
   static readonly VIDEOS_SUBDIR = 'videos';
   static readonly EXECUTIONS_NDJSON = 'executions.ndjson';
   static readonly EXECUTION_MANIFEST = 'execution.json';
@@ -81,6 +82,15 @@ export class HealTracesLayout {
     return path.join(
       this.testDir(playwrightTestId, attempt),
       HealTracesLayout.SCREENSHOTS_SUBDIR,
+      path.basename(filename),
+    );
+  }
+
+  rawScreenshotPath(playwrightTestId: string, attempt: number, filename: string): string {
+    return path.join(
+      this.testDir(playwrightTestId, attempt),
+      HealTracesLayout.SCREENSHOTS_SUBDIR,
+      HealTracesLayout.RAW_SCREENSHOTS_SUBDIR,
       path.basename(filename),
     );
   }

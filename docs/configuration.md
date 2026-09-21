@@ -83,6 +83,59 @@ in the same per-test directory the reporter already harvests; the
 `testInfo.attach('video', …)` call is what actually makes the
 recording show up in the tracer.
 
+### Electron apps
+
+A test that launches an Electron app with `_electron.launch()` —
+from `@playwright/test`, from `playwright`, or from this package,
+which are all the same object — needs nothing else. The tracer
+patches `launch` once per process and, for every launch inside a
+test body:
+
+- adds `recordVideo` when the project records video (`use.video`
+  not `off`) and the call passed none; the recording lands under
+  `testInfo.outputPath('electron-video')`, inside the directory the
+  reporter harvests;
+- registers the app's windows at creation (page ids `ctx1/p0`, …,
+  labelled `window-1`, `window-2` in the video metadata) and
+  attaches the network and console streams to the app's context, so
+  statements that drive a window carry its `pageId` and its renderer
+  requests land in `heal-network.ndjson`;
+- at teardown, closes an app the test left open (bounded by
+  `lifecycleMs`), then attaches the flushed recording under the name
+  `video` — the name the Heal viewer picks first — or removes it when
+  the video mode says so: `retain-on-failure` and `on-first-retry`
+  follow Playwright's own rules.
+
+The built-in `page` fixture still exists for such a test and, with
+`video: 'on'`, still records — a blank tab. To record Electron alone,
+turn the project's video off and keep Electron's with the override:
+
+```ts
+// playwright.config.ts
+configureTracer({ electron: { video: 'on' } });
+
+export default defineConfig({
+  use: { video: 'off' },
+});
+```
+
+Two cases the patch cannot see: an app launched in `beforeAll`
+(before any test fixture runs), and an app launched through a second
+copy of Playwright (a different `_electron` object). Hand those to
+the running test yourself, from `beforeEach` or the test body:
+
+```ts
+import { registerElectronApp } from '@heal-dev/heal-playwright-tracer';
+
+test.beforeEach(() => {
+  registerElectronApp(app); // attribution + network/console only
+});
+```
+
+The host keeps such an app: the tracer never closes it and does not
+attach its video. `configureTracer({ electron: { enabled: false } })`
+leaves `_electron.launch()` untouched altogether.
+
 ### Failure screenshots
 
 The tracer does **not** take its own end-of-test failure
@@ -320,6 +373,9 @@ configureTracer({
   timeouts: {
     screenshotMs: 10_000, // optional; see "Tuning timeouts" below
     lifecycleMs: 30_000,
+  },
+  electron: {
+    video: 'on', // optional; the video mode Electron windows follow — see "Electron apps" above
   },
 });
 

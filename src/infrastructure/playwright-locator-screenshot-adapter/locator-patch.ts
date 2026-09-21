@@ -117,7 +117,10 @@ export function ensureLocatorPrototypePatched(samplePage: Page): void {
       const session = activeSession;
       const cleanup =
         pg && session
-          ? await session.captureWithHighlight(pg, self, name, { scrollBeforeCapture: true })
+          ? await session.captureWithHighlight(pg, self, name, {
+              scrollBeforeCapture: true,
+              alsoRaw: true,
+            })
           : null;
 
       try {

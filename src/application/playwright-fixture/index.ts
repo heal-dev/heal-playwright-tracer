@@ -16,6 +16,9 @@
 //   - test-context        → testContextAdapter.capture(testInfo)
 //   - locator-screenshots → startLocatorScreenshotCapture(page, outDir)
 //   - test-stdout-capture → new StdoutCaptureSession()
+//   - electron            → ensureElectronLaunchPatched(_electron) + setActiveElectronHook(…):
+//                           an app launched with `_electron.launch()` in the test body
+//                           is registered, captured and recorded like the built-in page
 //   - NDJSON exporter         → default trace output to `heal-data/heal-traces.ndjson`
 //
 // User-extensible features (wired via `configureTracer(...)` from the
@@ -45,7 +48,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { expect, test as base, request as playwrightRequest } from '@playwright/test';
+import { _electron, expect, test as base, request as playwrightRequest } from '@playwright/test';
 // Side-effect: installs `globalThis.__heal_enter/__heal_ok/__heal_throw`.
 import {
   reset,
@@ -54,6 +57,7 @@ import {
   pushStep,
   popStep,
   setCurrentStatementScreenshot,
+  setCurrentStatementRawScreenshot,
   setCurrentStatementPage,
   getCurrentStatementSeq,
   getCurrentStepPath,
@@ -89,8 +93,15 @@ import type {
 } from '../heal-config';
 import { withTimeout } from '../../util/with-timeout';
 import { log } from '../../util/logger';
+import {
+  ensureElectronLaunchPatched,
+  setActiveElectronHook,
+  shouldKeep,
+} from '../../infrastructure/playwright-electron-adapter';
 import { wireAllPages, type WireableSession } from './wire-all-pages';
 import { buildVideoPages } from './build-video-pages';
+import { autoAttachManualVideos } from './auto-attach-manual-videos';
+import { buildElectronHook, electronVideoMode } from './electron-hook';
 import { HEAL_PREPROCESS } from '../../domain/trace-event-recorder/model/global-names';
 import type { EnterMeta } from '../../domain/trace-event-recorder/model/enter-meta';
 
@@ -246,6 +257,7 @@ export const test = base.extend<TraceFixtures>({
         page,
         screenshotsDir,
         setCurrentStatementScreenshot,
+        setCurrentStatementRawScreenshot,
         screenshotTimeoutMs,
       );
 
@@ -327,6 +339,28 @@ export const test = base.extend<TraceFixtures>({
         pageRegistry,
       });
 
+      // Electron: patch `_electron.launch` once per process and hand
+      // this test's hook to it, so an app launched in the test body is
+      // recorded on video like the built-in page and lands in the
+      // registry and the capture sessions at creation — the Browser
+      // patches above never see an Electron context. The mode Electron
+      // windows follow is also what decides, at teardown, whether their
+      // recording is kept. Cleared next to the page stamper.
+      const useVideo: unknown = testInfo.project.use.video;
+      const electronMode = electronVideoMode(tracerConfig.electron, useVideo);
+      if (tracerConfig.electron?.enabled !== false) {
+        ensureElectronLaunchPatched(_electron);
+        setActiveElectronHook(
+          buildElectronHook({
+            testInfo,
+            mode: electronMode,
+            useVideo,
+            registry: pageRegistry,
+            sessions: wireableSessions,
+          }),
+        );
+      }
+
       // Install per-statement pre-processor chain on `globalThis`. The
       // Babel plugin emits `await globalThis.__heal_preprocess?.(meta)`
       // inside every async-context leaf statement; with no
@@ -399,6 +433,25 @@ export const test = base.extend<TraceFixtures>({
         //
         // Best-effort: any failure just leaves the videos un-enriched.
         // Costs nothing when `recordVideo` is off (`page.video()` null).
+        //
+        // Auto-capture manual-context videos before building the
+        // videoPages list, so a `browser.newContext` video the test never
+        // attached itself still lands in `result.attachments` for the
+        // reporter to copy. See `autoAttachManualVideos`.
+        await autoAttachManualVideos(pageRegistry.list(), page, videoAttachMap, {
+          attach: (name, options) => testInfo.attach(name, options),
+          timeoutMs: lifecycleTimeoutMs,
+          // An Electron window's recording follows its video mode the
+          // way Playwright's own does; every other recording is kept.
+          keepVideo: (entry) =>
+            entry.kind !== 'electron' ||
+            shouldKeep(electronMode, {
+              status: testInfo.status,
+              expectedStatus: testInfo.expectedStatus,
+              retry: testInfo.retry,
+            }),
+        });
+
         try {
           const videoPages = buildVideoPages(pageRegistry.list(), page, videoAttachMap);
           if (videoPages.length > 0) {
@@ -449,6 +502,7 @@ export const test = base.extend<TraceFixtures>({
         const capturedStdout = stdoutSession.stop();
         stopScreenshots();
         stopPageAttribution();
+        setActiveElectronHook(null);
         restoreAttach();
 
         // Stop sidecar capture BEFORE finalizing the projector. Order:

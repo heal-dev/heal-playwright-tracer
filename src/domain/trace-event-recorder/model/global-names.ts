@@ -35,3 +35,11 @@ export const HEAL_PREPROCESS = '__heal_preprocess';
 // Stays `undefined` outside any test, so the optional call in the
 // instrumented source short-circuits.
 export const HEAL_EXPECT_SCREENSHOT = '__heal_expect_screenshot';
+
+// After-capture sibling of `HEAL_EXPECT_SCREENSHOT`. The Babel plugin
+// emits `await globalThis.__heal_expect_screenshot_after?.(target)` as
+// the last statement in the assertion's try body — so it runs only
+// when the matcher PASSED — to snap a second, overlay-free screenshot
+// of the now-settled page into the `raw/` subfolder. No-op outside any
+// test, like the others.
+export const HEAL_EXPECT_SCREENSHOT_AFTER = '__heal_expect_screenshot_after';
