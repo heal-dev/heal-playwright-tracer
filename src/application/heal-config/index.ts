@@ -28,4 +28,6 @@ export type {
   HealTracerNetworkConfig,
   HealTracerNetworkBodyMode,
   HealTracerConsoleConfig,
+  HealTracerElectronConfig,
+  HealTracerElectronVideoMode,
 } from './types';

@@ -6,6 +6,9 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import type { BrowserContext, Page } from 'playwright';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { autoAttachManualVideos } from '../../../src/application/playwright-fixture/auto-attach-manual-videos';
 import type { PageEntry } from '../../../src/infrastructure/playwright-page-registry-adapter';
 
@@ -404,5 +407,200 @@ describe('autoAttachManualVideos', () => {
     );
 
     expect(attach).toHaveBeenCalledWith('page-video-ctx2-p3', expect.anything());
+  });
+});
+
+describe('autoAttachManualVideos — electron windows', () => {
+  it('attaches an electron window video under the name "video"', async () => {
+    const primary = makePage(makeContext());
+    const appCtx = makeContext();
+    const win = makePage(appCtx);
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          videoRecordingPath: '/rec/w.webm',
+        }),
+      ],
+      primary,
+      new Map(),
+      { attach, timeoutMs: 1000, fileExists: ALWAYS },
+    );
+
+    // The app is closed through its context so the recording flushes…
+    expect(appCtx.close).toHaveBeenCalledTimes(1);
+    // …and lands under the name a viewer picks first.
+    expect(attach).toHaveBeenCalledWith('video', {
+      path: '/rec/w.webm',
+      contentType: 'video/webm',
+    });
+  });
+
+  it('removes a recording the video mode does not keep, and attaches nothing', async () => {
+    const primary = makePage(makeContext());
+    const win = makePage(makeContext());
+    const attach = makeAttach();
+    const removeFile = vi.fn();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          videoRecordingPath: '/rec/w.webm',
+        }),
+      ],
+      primary,
+      new Map(),
+      {
+        attach,
+        timeoutMs: 1000,
+        fileExists: ALWAYS,
+        keepVideo: (e) => e.kind !== 'electron',
+        removeFile,
+      },
+    );
+
+    expect(attach).not.toHaveBeenCalled();
+    expect(removeFile).toHaveBeenCalledWith('/rec/w.webm');
+  });
+
+  it('leaves a context the host owns alone: not closed, not attached', async () => {
+    const primary = makePage(makeContext());
+    const hostCtx = makeContext();
+    const win = makePage(hostCtx);
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          owned: false,
+          videoRecordingPath: '/rec/w.webm',
+        }),
+      ],
+      primary,
+      new Map(),
+      { attach, timeoutMs: 1000, fileExists: ALWAYS },
+    );
+
+    expect(hostCtx.close).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it('bounds a hanging close and still attaches what resolved', async () => {
+    const primary = makePage(makeContext());
+    const stuckCtx = makeContext();
+    stuckCtx.close.mockReturnValue(new Promise(() => {})); // a quit handler that never returns
+    const win = makePage(stuckCtx);
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          videoRecordingPath: '/rec/w.webm',
+        }),
+      ],
+      primary,
+      new Map(),
+      { attach, timeoutMs: 10, fileExists: ALWAYS },
+    );
+
+    expect(attach).toHaveBeenCalledWith('video', expect.anything());
+  });
+});
+
+describe('autoAttachManualVideos — keep rule edges', () => {
+  it('removes a recording not kept with the default remover (a real file)', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'heal-tracer-keep-'));
+    const rec = path.join(dir, 'win.webm');
+    fs.writeFileSync(rec, 'not really a video');
+    const primary = makePage(makeContext());
+    const win = makePage(makeContext());
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({ page: win, pageId: 'ctx1/p0', kind: 'electron', videoRecordingPath: rec }),
+      ],
+      primary,
+      new Map(),
+      { attach: makeAttach(), timeoutMs: 1000, keepVideo: () => false },
+    );
+
+    expect(fs.existsSync(rec)).toBe(false);
+  });
+
+  it('never removes a recording the test attached itself, kept or not', async () => {
+    const primary = makePage(makeContext());
+    const win = makePage(makeContext());
+    const removeFile = vi.fn();
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          videoRecordingPath: '/rec/w.webm',
+        }),
+      ],
+      primary,
+      new Map([['/rec/w.webm', '/out/attachments/video-abc.webm']]),
+      { attach, timeoutMs: 1000, fileExists: ALWAYS, keepVideo: () => false, removeFile },
+    );
+
+    expect(removeFile).not.toHaveBeenCalled();
+    expect(attach).not.toHaveBeenCalled();
+  });
+
+  it('a throwing keep rule skips that entry only', async () => {
+    const primary = makePage(makeContext());
+    const win = makePage(makeContext());
+    const popup = makePage(makeContext());
+    const attach = makeAttach();
+
+    await autoAttachManualVideos(
+      [
+        entry({ page: primary, pageId: 'ctx0/p0' }),
+        entry({
+          page: win,
+          pageId: 'ctx1/p0',
+          kind: 'electron',
+          videoRecordingPath: '/rec/w.webm',
+        }),
+        entry({ page: popup, pageId: 'ctx2/p0', videoRecordingPath: '/rec/p.webm' }),
+      ],
+      primary,
+      new Map(),
+      {
+        attach,
+        timeoutMs: 1000,
+        fileExists: ALWAYS,
+        keepVideo: (e) => {
+          if (e.kind === 'electron') throw new Error('rule boom');
+          return true;
+        },
+      },
+    );
+
+    expect(attach).toHaveBeenCalledTimes(1);
+    expect(attach).toHaveBeenCalledWith('page-video-ctx2-p0', expect.anything());
   });
 });

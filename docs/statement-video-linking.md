@@ -63,6 +63,11 @@ A tracer-owned registry maps every page and context to a stable id:
     already observes the manual `withRecordedContext` contexts.
   - `context.on('page')` for popups opened inside a context.
   - `wireInitialPage` for the test's primary page.
+  - `_electron.launch()`, patched once per process
+    (`src/infrastructure/playwright-electron-adapter/electron-launch-patch.ts`):
+    the app's context takes the same `registerContext` path as a
+    `browser.newContext`, marked `kind: 'electron'` so its windows are
+    labelled `window-n` and its video attached under the name `video`.
 - Assignment is idempotent (WeakMap-keyed), scoped to one test, cleared on
   teardown so a later test in the same worker starts clean.
 
@@ -108,6 +113,12 @@ Two video sources need two matching strategies:
   `testInfo.attach('video', { path })`, so the attachment path is stable. The
   fixture records `{ pageId → page.video().path() }` at teardown; the reporter
   **matches by path**. These are the videos that get no label today.
+- **Electron window videos** — the fixture injects `recordVideo` at launch,
+  closes the app at teardown (Playwright's `ElectronApplication.close()` is
+  its context's close, which flushes the file), and attaches the recording
+  itself under the name `video`. Path-matched like a manual video, labelled
+  `window-n`, and attached BEFORE Playwright's built-in `video`, so a viewer
+  that takes the first attachment of that name gets the window.
 
 Reporter algorithm:
 
