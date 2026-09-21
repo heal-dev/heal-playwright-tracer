@@ -14,8 +14,10 @@
 //   - active-page-stamper.ts  — process-global slot the patch sites read
 //   - page-navigation-patch.ts — Page.prototype nav-method interception
 //   - start-page-attribution.ts — per-test wiring entry point
+//   - register-context.ts     — a context + its pages, now and later, into the registry
 
-export { PageRegistry, type PageEntry } from './page-registry';
+export { PageRegistry, type PageEntry, type PageKind, type ContextMark } from './page-registry';
+export { registerContext } from './register-context';
 export {
   setActivePageStamper,
   getActivePageStamper,

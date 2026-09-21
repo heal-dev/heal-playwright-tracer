@@ -123,3 +123,77 @@ describe('buildVideoPages', () => {
     expect(buildVideoPages([entry(primary)], primary, new Map())).toEqual([]);
   });
 });
+
+describe('buildVideoPages — electron windows', () => {
+  it('labels electron windows window-1, window-2 … on their own counter', () => {
+    const primary = makePage({ hasVideo: true, url: 'https://app.test/' });
+    const popup = makePage({ hasVideo: true, url: 'https://app.test/popup' });
+    const win1 = makePage({ hasVideo: true, url: 'file:///app/index.html' });
+    const win2 = makePage({ hasVideo: true, url: 'file:///app/settings.html' });
+    const out = buildVideoPages(
+      [
+        entry(primary, { pageId: 'ctx0/p0' }),
+        entry(popup, { pageId: 'ctx0/p1' }),
+        // Electron windows are joined by path: the fixture attached them.
+        entry(win1, { pageId: 'ctx1/p0', kind: 'electron', videoRecordingPath: '/rec/w1.webm' }),
+        entry(win2, { pageId: 'ctx1/p1', kind: 'electron', videoRecordingPath: '/rec/w2.webm' }),
+      ],
+      primary,
+      new Map([
+        ['/rec/w1.webm', '/out/attachments/video-1.webm'],
+        ['/rec/w2.webm', '/out/attachments/video-2.webm'],
+      ]),
+    );
+    expect(out.map((v) => v.name)).toEqual(['main', 'page-1', 'window-1', 'window-2']);
+  });
+
+  it('gives a skipped electron window (no video) no slot', () => {
+    const primary = makePage({ hasVideo: true, url: 'https://app.test/' });
+    const silent = makePage({ hasVideo: false, url: 'file:///app/splash.html' });
+    const win = makePage({ hasVideo: true, url: 'file:///app/index.html' });
+    const out = buildVideoPages(
+      [
+        entry(primary, { pageId: 'ctx0/p0' }),
+        entry(silent, { pageId: 'ctx1/p0', kind: 'electron' }),
+        entry(win, { pageId: 'ctx1/p1', kind: 'electron', videoRecordingPath: '/rec/w.webm' }),
+      ],
+      primary,
+      new Map([['/rec/w.webm', '/out/attachments/video-1.webm']]),
+    );
+    expect(out.map((v) => v.name)).toEqual(['main', 'window-1']);
+  });
+});
+
+describe('buildVideoPages — electron windows are joined by path only', () => {
+  it('labels a closed window joined through the attach map window-n', () => {
+    const primary = makePage({ hasVideo: true, url: 'https://app.test/' });
+    // The fixture closed the app before this runs: video() may throw.
+    const win = makePage({ throwOnVideo: true, url: 'file:///app/index.html' });
+    const out = buildVideoPages(
+      [
+        entry(primary, { pageId: 'ctx0/p0' }),
+        entry(win, { pageId: 'ctx1/p0', kind: 'electron', videoRecordingPath: '/rec/w.webm' }),
+      ],
+      primary,
+      new Map([['/rec/w.webm', '/out/attachments/video-abc.webm']]),
+    );
+    expect(out.map((v) => v.name)).toEqual(['main', 'window-1']);
+    expect(out[1].videoPath).toBe('/out/attachments/video-abc.webm');
+  });
+
+  it('gives a window whose recording was removed no slot, even with a live video()', () => {
+    const primary = makePage({ hasVideo: true, url: 'https://app.test/' });
+    // A closed Electron window still answers video(); its recording was
+    // removed by the keep rule, so no attachment can ever match it.
+    const removed = makePage({ hasVideo: true, url: 'file:///app/index.html' });
+    const out = buildVideoPages(
+      [
+        entry(primary, { pageId: 'ctx0/p0' }),
+        entry(removed, { pageId: 'ctx1/p0', kind: 'electron', videoRecordingPath: '/rec/w.webm' }),
+      ],
+      primary,
+      new Map(),
+    );
+    expect(out.map((v) => v.name)).toEqual(['main']);
+  });
+});

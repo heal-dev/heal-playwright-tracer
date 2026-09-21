@@ -101,3 +101,16 @@ describe('heal-config registry', () => {
     configureTracer({});
   });
 });
+
+describe('heal-config registry — electron', () => {
+  beforeEach(() => configureTracer({}));
+
+  it('round-trips the electron block', () => {
+    configureTracer({ electron: { enabled: false, video: 'retain-on-failure' } });
+    expect(getTracerConfig().electron).toEqual({ enabled: false, video: 'retain-on-failure' });
+  });
+
+  it('leaves electron undefined by default (support on, project video mode)', () => {
+    expect(getTracerConfig().electron).toBeUndefined();
+  });
+});

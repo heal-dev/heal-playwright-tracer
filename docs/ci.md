@@ -4,7 +4,7 @@
 
 | Workflow                                | Trigger                               | Purpose                                                                                                                                      |
 | --------------------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.github/workflows/ci.yml`              | push to `main`, PRs to `main`         | Typecheck, lint, unit tests + coverage, build, Codecov upload, Playwright integration matrix.                                                |
+| `.github/workflows/ci.yml`              | push to `main`, PRs to `main`         | Typecheck, lint, unit tests + coverage, build, Codecov upload, Playwright integration matrix, the Electron integration job (under xvfb).     |
 | `.github/workflows/bump-version.yml`    | `workflow_dispatch` (manual)          | Bumps `package.json` via `npm version`, opens a signed bump PR through the GitHub REST API.                                                  |
 | `.github/workflows/private-release.yml` | `workflow_dispatch` only              | Publishes the package to GitHub Packages (`npm.pkg.github.com`). Requires a reviewer approval from the `release` environment before running. |
 | `.github/workflows/scorecard.yml`       | push to `main`, weekly cron, dispatch | Runs OpenSSF Scorecard, uploads SARIF to Code Scanning, publishes to https://scorecard.dev.                                                  |
@@ -31,7 +31,7 @@ The `main` branch is protected by a repository ruleset (`Main (hardened)`):
 
 - No force-push, no deletion, linear history required.
 - PR required with 1 review, code-owner review, last-push approval, stale-review dismissal, thread resolution.
-- Required status checks: `Lint / Unit coverage / Build`, `Integration (Playwright <version>)` for each matrix entry.
+- Required status checks: `Lint / Unit coverage / Build`, `Integration (Playwright <version>)` for each matrix entry, `Integration (Electron)`.
 - No bypass actors — admins included.
 
 Version tags matching `refs/tags/v*` are protected against deletion and force-push by a second ruleset.

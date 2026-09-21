@@ -111,3 +111,48 @@ describe('PageRegistry', () => {
     expect(reg.entryForPage(b)?.videoStartWallMs).toBe(5_000);
   });
 });
+
+describe('PageRegistry.markContext', () => {
+  it('copies a mark set before registration onto the pages of that context', () => {
+    const reg = new PageRegistry();
+    const ctx = makeContext();
+    reg.markContext(ctx, { kind: 'electron' });
+    const page = makePage(ctx);
+    reg.ensurePageId(page);
+    expect(reg.entryForPage(page)?.kind).toBe('electron');
+    expect(reg.entryForPage(page)?.owned).toBeUndefined();
+  });
+
+  it('back-fills pages already registered for that context (order-proof)', () => {
+    const reg = new PageRegistry();
+    const ctx = makeContext();
+    const page = makePage(ctx);
+    reg.ensurePageId(page);
+    expect(reg.entryForPage(page)?.kind).toBeUndefined();
+
+    reg.markContext(ctx, { kind: 'electron', owned: false });
+    expect(reg.entryForPage(page)?.kind).toBe('electron');
+    expect(reg.entryForPage(page)?.owned).toBe(false);
+  });
+
+  it('merges successive marks and leaves other contexts untouched', () => {
+    const reg = new PageRegistry();
+    const a = makeContext();
+    const b = makeContext();
+    const pa = makePage(a);
+    const pb = makePage(b);
+    reg.ensurePageId(pa);
+    reg.ensurePageId(pb);
+
+    reg.markContext(a, { kind: 'electron' });
+    reg.markContext(a, { owned: false });
+    expect(reg.entryForPage(pa)).toMatchObject({ kind: 'electron', owned: false });
+    expect(reg.entryForPage(pb)?.kind).toBeUndefined();
+    expect(reg.entryForPage(pb)?.owned).toBeUndefined();
+
+    // A page opened later in the marked context inherits the merged mark.
+    const later = makePage(a);
+    reg.ensurePageId(later);
+    expect(reg.entryForPage(later)).toMatchObject({ kind: 'electron', owned: false });
+  });
+});
