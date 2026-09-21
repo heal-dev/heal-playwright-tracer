@@ -275,6 +275,31 @@ export interface HealTracerConsoleConfig {
 }
 
 /**
+ * Video mode for Electron windows — the same vocabulary as Playwright's
+ * `use.video`, without the object form (the size comes from the
+ * project's `use.video` when it is an object).
+ */
+export type HealTracerElectronVideoMode = 'on' | 'retain-on-failure' | 'on-first-retry' | 'off';
+
+/**
+ * Electron support. On by default: a test that launches an app with
+ * `_electron.launch()` (from `@playwright/test` or `playwright`) gets
+ * its windows registered at creation, covered by the network and
+ * console streams, and recorded on video like the built-in `page`.
+ */
+export interface HealTracerElectronConfig {
+  /** Pass `false` to leave `_electron.launch()` untouched. Defaults to `true`. */
+  enabled?: boolean;
+  /**
+   * Video mode for Electron windows. Defaults to the project's
+   * `use.video`. Set it to keep recording Electron windows while the
+   * project's own video is `off` — the built-in Chromium page of a test
+   * that only drives Electron never navigates, so its recording is blank.
+   */
+  video?: HealTracerElectronVideoMode;
+}
+
+/**
  * Shape of the object passed to `configureTracer(...)`. All fields
  * are optional — an empty config yields the default behaviour
  * (statement-stream NDJSON + network and console sidecars, no
@@ -294,4 +319,5 @@ export interface HealTracerConfig {
   timeouts?: HealTracerTimeouts;
   network?: HealTracerNetworkConfig;
   console?: HealTracerConsoleConfig;
+  electron?: HealTracerElectronConfig;
 }

@@ -36,15 +36,16 @@ That's because the trace ifs focused on locator evaluation, while real-life test
 Heal adds the missing instrumentation layer to let LLM agents work their magic.
 And it's useful for humans in complex test codebases, too!
 
-| Feature        | Playwright Trace      | Heal Tracer          | Example: What Heal Adds                                                                   |
-| -------------- | --------------------- | -------------------- | ----------------------------------------------------------------------------------------- |
-| Granularity    | Action-level          | Statement-level      | Shows `let x = calculate()` line-by-line, not just the final `page.click()`.              |
-| Data Format    | ZIP/Binary            | NDJSON Stream        | `{"type":"step","file":"auth.spec.ts","line":12,"val":{"user":"dev"}}`                    |
-| Visual Context | Standard screenshots  | Highlighted locators | An image where the target button is outlined in a neon overlay to prove hit-box accuracy. |
-| Variable State | Limited/Debugger only | Full Variable Values | Captures that `status_code` was `403` inside a hidden helper function.                    |
-| Error Detail   | Standard stack trace  | Serialized Errors    | A JSON object containing the DOM snapshot at the exact millisecond of the throw.          |
-| Timing         | Action durations      | Per-statement timing | Identifies that a specific `if` statement logic took `2.5s` to evaluate.                  |
-| Correlations   | Loose logs/network    | API Correlations     | Links `Trace_ID_99` directly to `Source_Line_45` in the NDJSON stream.                    |
+| Feature        | Playwright Trace      | Heal Tracer          | Example: What Heal Adds                                                                    |
+| -------------- | --------------------- | -------------------- | ------------------------------------------------------------------------------------------ |
+| Granularity    | Action-level          | Statement-level      | Shows `let x = calculate()` line-by-line, not just the final `page.click()`.               |
+| Data Format    | ZIP/Binary            | NDJSON Stream        | `{"type":"step","file":"auth.spec.ts","line":12,"val":{"user":"dev"}}`                     |
+| Visual Context | Standard screenshots  | Highlighted locators | An image where the target button is outlined in a neon overlay to prove hit-box accuracy.  |
+| Variable State | Limited/Debugger only | Full Variable Values | Captures that `status_code` was `403` inside a hidden helper function.                     |
+| Error Detail   | Standard stack trace  | Serialized Errors    | A JSON object containing the DOM snapshot at the exact millisecond of the throw.           |
+| Timing         | Action durations      | Per-statement timing | Identifies that a specific `if` statement logic took `2.5s` to evaluate.                   |
+| Correlations   | Loose logs/network    | API Correlations     | Links `Trace_ID_99` directly to `Source_Line_45` in the NDJSON stream.                     |
+| Electron       | Fixture page only     | The app's windows    | An app launched with `_electron.launch()` is recorded on video and captured like the page. |
 
 ## Install
 
@@ -113,7 +114,8 @@ Every run produces a self-contained execution dir under:
             ├── screenshots/
             │   └── stmt-0001.png
             └── videos/
-                └── video.webm
+                ├── video.webm                          # the built-in `page`
+                └── video-<sha1>.webm                   # an Electron window (docs/configuration.md)
 ```
 
 Keys are shaped `{executionId}/{testId}/{attempt}/...` so the layout
@@ -236,6 +238,21 @@ page.click(...)`, network, navigation) are dominated by the browser
 Scope the `include` filter in `playwright.config.ts` so only your
 `tests/` directory is instrumented — never your app code or
 `node_modules` — to keep the cost contained.
+
+An Electron app launched inside a test is recorded and captured (see
+[`configuration.md`](docs/configuration.md#electron-apps)); three
+things to know:
+
+- **Chromium still launches.** The fixture depends on Playwright's
+  `page`, so a test that only drives Electron still opens a headless
+  Chromium tab; with `video: 'on'` that tab yields a blank recording
+  next to the window's. Set `use.video: 'off'` and
+  `configureTracer({ electron: { video: 'on' } })` to record Electron alone.
+- **Two attachments named `video`** can then coexist — the window's
+  first, Playwright's built-in second. The reporter keeps both, with
+  distinct `pageName`s (`window-1`, `main`).
+- **An app launched in `beforeAll` is not seen** by the launch patch;
+  hand it to each test with `registerElectronApp(app)` from `beforeEach`.
 
 ## License
 

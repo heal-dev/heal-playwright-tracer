@@ -9,7 +9,8 @@ The package's docs are split by audience:
   first if you're contributing.
 - [`configuration.md`](configuration.md) — end-user surface: the
   reporter, `configureTracer`, custom exporters, lifecycles, the
-  `screenshotMs` / `lifecycleMs` knobs, ESM consumer guidance, the
+  `screenshotMs` / `lifecycleMs` knobs, Electron apps (video,
+  capture, `registerElectronApp`), ESM consumer guidance, the
   `HEAL_PRINT_ARTIFACT_PATHS` debug env var.
 - [`ci.md`](ci.md) — CI workflows, release flow, branch/tag
   protection, allowed actions, secrets.

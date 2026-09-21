@@ -62,6 +62,13 @@ export interface SandboxOptions {
    * by the video-page-metadata integration test.
    */
   withVideo?: boolean;
+  /**
+   * When true, register `configureTracer({ electron: { video: 'on' } })`
+   * so Electron windows record while the project's own `use.video`
+   * stays as `withVideo` says — the shape an Electron-only suite uses to
+   * skip the blank built-in page. Used by the electron integration test.
+   */
+  withElectronVideo?: boolean;
 }
 
 export class IntegrationSandbox {
@@ -182,8 +189,11 @@ export class IntegrationSandbox {
     // independent — both can be enabled, neither is, or one of each.
     const importLines: string[] = [`import { defineConfig } from '@playwright/test';`];
     const tracerOpts: string[] = [];
-    if (this.opts.withStubExporter || this.opts.withPreProcessor) {
+    if (this.opts.withStubExporter || this.opts.withPreProcessor || this.opts.withElectronVideo) {
       importLines.push(`import { configureTracer } from '@heal-dev/heal-playwright-tracer';`);
+    }
+    if (this.opts.withElectronVideo) {
+      tracerOpts.push(`electron: { video: 'on' }`);
     }
     if (this.opts.withStubExporter) {
       importLines.push(`import { stubExporterFactory } from './heal-stub-exporter';`);
