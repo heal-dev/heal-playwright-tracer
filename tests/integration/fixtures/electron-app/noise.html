@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>electron integration window</title>
+  </head>
+  <body style="margin: 0; background: #202020">
+    <canvas id="noise" width="640" height="480"></canvas>
+    <button id="hello" style="position: absolute; top: 8px; left: 8px">click me</button>
+    <p id="status" style="position: absolute; top: 40px; left: 8px; color: #fff">idle</p>
+    <script>
+      // Random pixels every frame: a real recording of this window is
+      // orders of magnitude larger than a blank one.
+      const canvas = document.getElementById('noise');
+      const ctx = canvas.getContext('2d');
+      const frame = ctx.createImageData(canvas.width, canvas.height);
+      const paint = () => {
+        const px = frame.data;
+        for (let i = 0; i < px.length; i += 4) {
+          px[i] = (Math.random() * 256) | 0;
+          px[i + 1] = (Math.random() * 256) | 0;
+          px[i + 2] = (Math.random() * 256) | 0;
+          px[i + 3] = 255;
+        }
+        ctx.putImageData(frame, 0, 0);
+        requestAnimationFrame(paint);
+      };
+      requestAnimationFrame(paint);
+
+      // The click fires the one fetch the network stream must capture.
+      // On click, not on load: the spec clicks after the tracer wired the
+      // app's context, whereas a load-time fetch can beat the launch.
+      const status = document.getElementById('status');
+      const base = new URLSearchParams(location.search).get('base');
+      document.getElementById('hello').addEventListener('click', () => {
+        status.textContent = 'clicked';
+        if (!base) return;
+        fetch(base + '/', { mode: 'no-cors' })
+          .then(() => (status.textContent = 'fetched'))
+          .catch(() => (status.textContent = 'fetch failed'));
+      });
+    </script>
+  </body>
+</html>

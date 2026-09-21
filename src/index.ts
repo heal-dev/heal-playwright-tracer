@@ -25,7 +25,17 @@ export type {
   HealTestLifecycleFactory,
   StatementPreProcessor,
   StatementPreProcessorContext,
+  HealTracerElectronConfig,
+  HealTracerElectronVideoMode,
 } from './application/heal-config';
+
+// Electron by hand. An app launched inside a test body through
+// `_electron.launch()` needs nothing — the fixture sees the launch. An
+// app the fixture could not see (launched in `beforeAll`, or through a
+// second Playwright copy) is handed to the running test with this: its
+// windows get page ids and the network/console streams cover it. The
+// host keeps the app, so it is never closed nor recorded by the tracer.
+export { registerActiveElectronApp as registerElectronApp } from './infrastructure/playwright-electron-adapter';
 
 // Re-export the HealTraceExporter port and the record type it consumes,
 // so consumers implementing their own exporter against

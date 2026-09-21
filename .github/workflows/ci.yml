@@ -93,3 +93,48 @@ jobs:
         env:
           PLAYWRIGHT_VERSION: ${{ matrix.playwright }}
         run: npm run test:integration
+
+  # The Electron integration test needs the `electron` devDependency's
+  # binary (its install script is skipped by --ignore-scripts above, so it
+  # is fetched by `npm rebuild`) and a display, which xvfb provides. The
+  # plain integration legs skip this test; it is gated on HEAL_IT_ELECTRON.
+  integration-electron:
+    name: Integration (Electron)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Cache the Electron binary
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Fetch the Electron binary
+        run: npm rebuild electron
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-browsers-${{ runner.os }}-1.60.0
+
+      - name: Install Playwright browsers (their deps include xvfb)
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the Electron integration test under a virtual display
+        env:
+          HEAL_IT_ELECTRON: '1'
+        run: xvfb-run -a npm run test:integration -- tests/integration/specs/electron-window-video.test.ts
