@@ -60,7 +60,9 @@ jobs:
 
   integration:
     name: Integration (Playwright ${{ matrix.playwright }})
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, where Playwright cannot install
+    # Chromium or its system dependencies yet.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
@@ -100,7 +102,9 @@ jobs:
   # plain integration legs skip this test; it is gated on HEAL_IT_ELECTRON.
   integration-electron:
     name: Integration (Electron)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, where Playwright cannot install
+    # Chromium or its system dependencies yet.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     steps:
