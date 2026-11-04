@@ -86,9 +86,22 @@ export class CommanderCliAdapter {
         'Serve only the /api/* routes (no SPA bundle, no browser auto-open). ' +
           'For driving the REST API from a separate frontend dev server.',
       )
-      .action(async (opts: { verbose?: boolean; port?: string; apiOnly?: boolean }) => {
-        await this.handleView(opts);
-      });
+      .option(
+        '--allow-origin <origin...>',
+        'Origins, besides the viewer itself, that may call the /api/* routes ' +
+          '(e.g. http://localhost:5173 for a frontend dev server with --api-only). ' +
+          'Every other site is refused.',
+      )
+      .action(
+        async (opts: {
+          verbose?: boolean;
+          port?: string;
+          apiOnly?: boolean;
+          allowOrigin?: string[];
+        }) => {
+          await this.handleView(opts);
+        },
+      );
   }
 
   private log(msg: string): void {
@@ -109,6 +122,7 @@ export class CommanderCliAdapter {
     verbose?: boolean;
     port?: string;
     apiOnly?: boolean;
+    allowOrigin?: string[];
   }): Promise<void> {
     const rootDir = process.cwd();
 
@@ -139,6 +153,7 @@ export class CommanderCliAdapter {
       log: (m) => this.log(m),
       verbose: opts.verbose,
       apiOnly: opts.apiOnly,
+      allowedOrigins: opts.allowOrigin,
     });
 
     await server.start();
