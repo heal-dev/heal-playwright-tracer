@@ -5,6 +5,7 @@
  */
 
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import * as http from 'node:http';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -108,6 +109,18 @@ let root: string;
 let bundleDir: string;
 let server: LocalViewerServer;
 let baseUrl: string;
+
+/** A GET with a Host header of our choosing (fetch always sends the URL's own). */
+const getWithHost = (pathname: string, host: string): Promise<number> =>
+  new Promise((resolve, reject) => {
+    const { hostname, port } = new URL(baseUrl);
+    const req = http.request({ hostname, port, path: pathname, headers: { Host: host } }, (res) => {
+      res.resume();
+      resolve(res.statusCode ?? 0);
+    });
+    req.on('error', reject);
+    req.end();
+  });
 
 beforeAll(async () => {
   root = await mkdtemp(path.join(tmpdir(), 'heal-tracer-srv-'));
@@ -452,10 +465,92 @@ describe('LocalViewerServer', () => {
     expect(res.status).toBe(405);
   });
 
-  it('OPTIONS preflight includes Access-Control-Allow-Private-Network', async () => {
-    const res = await fetch(`${baseUrl}/api/executions`, { method: 'OPTIONS' });
+  it("OPTIONS preflight from Playwright's trace viewer includes Access-Control-Allow-Private-Network", async () => {
+    const res = await fetch(`${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/trace.zip`, {
+      method: 'OPTIONS',
+      headers: { Origin: 'https://trace.playwright.dev', 'Access-Control-Request-Method': 'GET' },
+    });
     expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-origin')).toBe('https://trace.playwright.dev');
     expect(res.headers.get('access-control-allow-private-network')).toBe('true');
+  });
+
+  // --- who may call the API ----------------------------------------------
+
+  it('answers no other site with a wildcard origin', async () => {
+    const res = await fetch(`${baseUrl}/api/executions`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect(res.headers.get('access-control-allow-private-network')).toBeNull();
+  });
+
+  it("answers the viewer's own page with its origin", async () => {
+    const res = await fetch(`${baseUrl}/api/executions`, {
+      headers: { Origin: baseUrl, 'Sec-Fetch-Site': 'same-origin' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('access-control-allow-origin')).toBe(baseUrl);
+  });
+
+  it('refuses another site before the route runs, for reads, exec and analyze', async () => {
+    const evil = { Origin: 'https://evil.example', 'Sec-Fetch-Site': 'cross-site' };
+
+    const list = await fetch(`${baseUrl}/api/executions`, { headers: evil });
+    const exec = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { ...evil, 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ bin: 'heal', args: ['whoami', '--json'] }),
+    });
+    const analyze = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/tests/${TID}/${ATTEMPT}/analyze`,
+      {
+        method: 'POST',
+        headers: evil,
+      },
+    );
+    const preflight = await fetch(`${baseUrl}/api/exec`, {
+      method: 'OPTIONS',
+      headers: { ...evil, 'Access-Control-Request-Method': 'POST' },
+    });
+
+    expect([list.status, exec.status, analyze.status, preflight.status]).toEqual([
+      403, 403, 403, 403,
+    ]);
+    expect(list.headers.get('access-control-allow-origin')).toBeNull();
+  });
+
+  it("refuses another site's <img> or <script>, which sends no Origin", async () => {
+    const res = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/screenshot/${TID}/${ATTEMPT}/stmt-0001.png`,
+      { headers: { 'Sec-Fetch-Site': 'cross-site' } },
+    );
+    expect(res.status).toBe(403);
+  });
+
+  it('refuses a request whose Host is not this viewer (a domain rebound to 127.0.0.1)', async () => {
+    const page = await getWithHost('/', 'evil.example');
+    const api = await getWithHost('/api/executions', `evil.example:${new URL(baseUrl).port}`);
+    expect([page, api]).toEqual([403, 403]);
+  });
+
+  it("lets Playwright's trace viewer read a trace file, and nothing else", async () => {
+    const playwright = { Origin: 'https://trace.playwright.dev', 'Sec-Fetch-Site': 'cross-site' };
+
+    const trace = await fetch(
+      `${baseUrl}/api/executions/${EXEC}/asset/${TID}/${ATTEMPT}/trace.zip`,
+      {
+        headers: playwright,
+      },
+    );
+    const exec = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { ...playwright, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bin: 'heal', args: ['whoami', '--json'] }),
+    });
+
+    expect(trace.status).toBe(200);
+    expect(trace.headers.get('access-control-allow-origin')).toBe('https://trace.playwright.dev');
+    expect(exec.status).toBe(403);
   });
 
   // --- /api/exec routes ------------------------------------------------
@@ -469,6 +564,36 @@ describe('LocalViewerServer', () => {
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: string };
     expect(typeof body.error).toBe('string');
+  });
+
+  it('POST /api/exec refuses a heal command the viewer does not run', async () => {
+    const statuses = await Promise.all(
+      [
+        ['logout'],
+        ['init'],
+        ['whoami', '--json', '--extra'],
+        ['login', '--json', '--return-to', 'https://evil.example'],
+      ].map(
+        async (args) =>
+          (
+            await fetch(`${baseUrl}/api/exec`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ bin: 'heal', args }),
+            })
+          ).status,
+      ),
+    );
+    expect(statuses).toEqual([403, 403, 403, 403]);
+  });
+
+  it('POST /api/exec refuses a body that is not JSON, which a page sends without a preflight', async () => {
+    const res = await fetch(`${baseUrl}/api/exec`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ bin: 'heal', args: ['whoami', '--json'] }),
+    });
+    expect(res.status).toBe(415);
   });
 
   it('POST /api/exec with allowed bin returns 200 + jobId (spawn entrypoint)', async () => {
@@ -560,7 +685,7 @@ describe('LocalViewerServer', () => {
     const post = await fetch(`${baseUrl}/api/exec`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ bin: 'heal', args: ['whoami'] }),
+      body: JSON.stringify({ bin: 'heal', args: ['whoami', '--json'] }),
     });
     expect(post.status).toBe(200);
     const { jobId } = (await post.json()) as { jobId: string };

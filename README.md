@@ -155,24 +155,28 @@ history. Press Ctrl+C to stop.
 
 #### Options
 
-| Flag            | Description                                                                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--port <port>` | Bind a fixed port instead of an OS-assigned ephemeral one. Useful when an external frontend needs a stable URL. Falls back to the `HEAL_TRACER_PORT` env var. |
-| `--api-only`    | Serve only the `/api/*` routes — no SPA bundle, no browser auto-open. For driving the REST API from a separate frontend dev server.                           |
-| `--verbose`     | Mirror spawned subprocess output (`heal analyze`, `heal login`) to the tracer console.                                                                        |
+| Flag                         | Description                                                                                                                                                   |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--port <port>`              | Bind a fixed port instead of an OS-assigned ephemeral one. Useful when an external frontend needs a stable URL. Falls back to the `HEAL_TRACER_PORT` env var. |
+| `--api-only`                 | Serve only the `/api/*` routes — no SPA bundle, no browser auto-open. For driving the REST API from a separate frontend dev server.                           |
+| `--allow-origin <origin...>` | Origins, besides the viewer itself, that may call the `/api/*` routes, e.g. your frontend dev server with `--api-only`.                                       |
+| `--verbose`                  | Mirror spawned subprocess output (`heal analyze`, `heal login`) to the tracer console.                                                                        |
 
 To consume the REST API from your own frontend during development,
 run the server on a fixed port without the bundled UI:
 
 ```sh
-npx heal-tracer view --api-only --port 3001
+npx heal-tracer view --api-only --port 3001 --allow-origin http://localhost:5173
 # or, via env (e.g. from a .env loaded with `node --env-file`, direnv, or your shell):
-HEAL_TRACER_PORT=3001 npx heal-tracer view --api-only
+HEAL_TRACER_PORT=3001 npx heal-tracer view --api-only --allow-origin http://localhost:5173
 ```
 
-CORS is wide-open (`Access-Control-Allow-Origin: *`), so a frontend
-on its own dev server can `fetch('http://localhost:3001/api/executions')`
-cross-origin with no extra setup. The API is unauthenticated and
+The API answers the viewer's own page, tools that are not a browser
+(curl, scripts), and the origins named with `--allow-origin`; the
+"open in Playwright" link may read trace files from
+`https://trace.playwright.dev`. Every other site is refused with a 403
+before the route runs, so a page you browse elsewhere cannot read your
+traces or start `heal`. The API is unauthenticated and
 `localhost`-bound by design — don't expose it on a public interface.
 
 ### Claude Skill

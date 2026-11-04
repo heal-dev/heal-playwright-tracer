@@ -38,6 +38,7 @@ import {
   isSafeIdForRouting,
 } from './discover-traces';
 import { ExecJobManager } from './exec-job-manager';
+import { decideRequest, isAllowedHealCommand } from './request-guard';
 import type {
   AnalyzeRunStartResponse,
   AnalyzeRunStatus,
@@ -56,8 +57,9 @@ import { loadTrace, rewriteScreenshots, stampVideoTimes } from './ndjson-trace-l
 
 const EXEC_BODY_MAX_BYTES = 64 * 1024;
 
-// The viewer's auth chip only ever spawns `heal whoami` / `heal login`
-// — this OSS tracer is the entry point to the paid heal-cli funnel.
+// The viewer's auth chip only ever spawns `heal whoami` / `heal quota` /
+// `heal login` (see isAllowedHealCommand) — this OSS tracer is the entry
+// point to the paid heal-cli funnel.
 const ALLOWED_EXEC_BIN = 'heal';
 
 const MIME_TYPES: Record<string, string> = {
@@ -85,6 +87,9 @@ const MIME_TYPES: Record<string, string> = {
 
 const getMime = (filePath: string): string =>
   MIME_TYPES[path.extname(filePath).toLowerCase()] ?? 'application/octet-stream';
+
+const headerValue = (value: string | string[] | undefined): string | undefined =>
+  Array.isArray(value) ? value[0] : value;
 
 const sendJson = (res: http.ServerResponse, status: number, body: unknown): void => {
   const json = JSON.stringify(body);
@@ -241,10 +246,15 @@ export interface LocalViewerServerOptions {
    * When true, serve only the `/api/*` routes and return 404 for
    * everything else — the vendored SPA bundle is not served. Lets an
    * external frontend (running on its own dev server) consume the REST
-   * API cross-origin without this process also shipping a UI. CORS is
-   * already wide-open, so no extra config is needed on the client.
+   * API cross-origin without this process also shipping a UI. Name that
+   * frontend's origin in `allowedOrigins`.
    */
   apiOnly?: boolean;
+  /**
+   * Origins, besides the viewer's own, that may call the `/api/*` routes
+   * (e.g. `http://localhost:5173` for a frontend dev server).
+   */
+  allowedOrigins?: string[];
   /**
    * When true, every spawned subprocess's stdout/stderr is mirrored to
    * the tracer's own stdout/stderr (in addition to being captured in
@@ -320,13 +330,37 @@ export class LocalViewerServer {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    // Chrome Private Network Access: a public HTTPS origin (e.g.
-    // trace.playwright.dev) fetching a private address (localhost)
-    // requires this opt-in on the preflight response.
-    res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    const url = new URL(req.url ?? '/', 'http://localhost');
+    const pathname = decodeURIComponent(url.pathname);
+
+    // Refused before any route runs: another site's page, in the
+    // developer's browser, must not read the traces or start `heal`.
+    const decision = decideRequest(
+      {
+        method: req.method ?? 'GET',
+        pathname,
+        host: req.headers.host,
+        origin: req.headers.origin,
+        secFetchSite: headerValue(req.headers['sec-fetch-site']),
+      },
+      { hostname: this.options.hostname, allowedOrigins: this.options.allowedOrigins },
+    );
+    if (!decision.allowed) {
+      sendJson(res, 403, { error: decision.reason });
+
+      return;
+    }
+    if (decision.corsOrigin !== null) {
+      res.setHeader('Access-Control-Allow-Origin', decision.corsOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Range');
+    }
+    if (decision.privateNetwork) {
+      // Chrome Private Network Access: trace.playwright.dev fetching a
+      // private address (localhost) requires this opt-in on the preflight.
+      res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    }
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -334,9 +368,6 @@ export class LocalViewerServer {
 
       return;
     }
-
-    const url = new URL(req.url ?? '/', 'http://localhost');
-    const pathname = decodeURIComponent(url.pathname);
 
     // POST is only valid for /api/exec; everything else is GET-only.
     if (pathname === '/api/exec' && req.method === 'POST') {
@@ -441,6 +472,12 @@ export class LocalViewerServer {
   }
 
   private async serveExecSpawn(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // JSON only: a text/plain POST skips the browser's preflight.
+    if (!(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
+      sendJson(res, 415, { error: 'Body must be application/json' });
+
+      return;
+    }
     let body: unknown;
     try {
       body = await readJsonBody(req, EXEC_BODY_MAX_BYTES);
@@ -460,6 +497,14 @@ export class LocalViewerServer {
     if (body.bin !== ALLOWED_EXEC_BIN) {
       sendJson(res, 403, {
         error: `Only '${ALLOWED_EXEC_BIN}' may be spawned via /api/exec.`,
+      });
+
+      return;
+    }
+
+    if (!isAllowedHealCommand(body.args, `http://${req.headers.host ?? ''}`)) {
+      sendJson(res, 403, {
+        error: `Only 'heal whoami', 'heal quota' and 'heal login' may be run via /api/exec.`,
       });
 
       return;
